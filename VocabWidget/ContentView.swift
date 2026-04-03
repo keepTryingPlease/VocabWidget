@@ -24,6 +24,7 @@ struct ContentView: View {
 
     // How far the user has dragged the foreground card. Drives real-time movement.
     @State private var dragOffset: CGFloat = 0
+    @State private var isFetchingAudio = false
 
     // Swipe must exceed this distance (or predicted velocity equivalent) to complete.
     private let swipeThreshold: CGFloat = 120
@@ -85,6 +86,25 @@ struct ContentView: View {
                         )
                 }
 
+                // ── Pronunciation button ──────────────────────────────────
+                Button {
+                    Task {
+                        isFetchingAudio = true
+                        await PronunciationService.shared.speak(VocabularyStore.word(forDayOffset: dayOffset).word)
+                        isFetchingAudio = false
+                    }
+                } label: {
+                    if isFetchingAudio {
+                        ProgressView()
+                            .frame(width: 44, height: 44)
+                    } else {
+                        Image(systemName: "speaker.wave.2")
+                            .font(.title2)
+                            .frame(width: 44, height: 44)
+                    }
+                }
+                .padding(.top, 16)
+
                 Spacer()
 
                 // ── Word Bank button ──────────────────────────────────────
@@ -99,6 +119,7 @@ struct ContentView: View {
                 .padding(.bottom, 40)
             }
             .navigationBarHidden(true)
+            .onChange(of: dayOffset) { _, _ in isFetchingAudio = false }
             .sheet(item: $selectedWord) { word in
                 WordDetailView(word: word)
             }
