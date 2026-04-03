@@ -2,26 +2,35 @@
 // The main screen of the app.
 //
 // LEARNING NOTES:
-// - `@State` is SwiftUI's simplest way to store local view state.
-//   When a @State var changes, SwiftUI re-renders the view automatically.
-// - `NavigationStack` gives you the top nav bar and enables push navigation.
-// - `NavigationLink` pushes a new view onto the stack when tapped.
-// - `DragGesture` detects swipe direction via translation.width.
+// - DragGesture.onChanged fires continuously as the finger moves, letting us
+//   move the card in real time by storing translation in @State.
+// - DragGesture.onEnded gives us both the final translation AND predictedEndTranslation
+//   (velocity-based), so a quick flick completes the swipe even if short.
+// - ZStack layers views back-to-front. The background card sits behind the
+//   foreground card and scales up as the drag progresses, creating the illusion
+//   of a physical stack.
+// - DispatchQueue.main.asyncAfter lets us wait for the fly-off animation to finish
+//   before resetting state (no visible jump).
 
 import SwiftUI
 
 struct ContentView: View {
 
     let allWords = VocabularyStore.words
-
-    // Track whether the deep-link detail sheet is showing.
     @State private var selectedWord: VocabularyWord? = nil
 
-    // 0 = today, -1 = yesterday, -2 = two days ago, etc.
+    // Which day we're viewing. 0 = today, -1 = yesterday, etc.
     @State private var dayOffset = 0
 
-    private var browsedWord: VocabularyWord {
-        VocabularyStore.word(forDayOffset: dayOffset)
+    // How far the user has dragged the foreground card. Drives real-time movement.
+    @State private var dragOffset: CGFloat = 0
+
+    // Swipe must exceed this distance (or predicted velocity equivalent) to complete.
+    private let swipeThreshold: CGFloat = 120
+
+    // 0.0 → 1.0 as drag approaches the threshold. Used to scale the background card.
+    private var swipeProgress: CGFloat {
+        min(abs(dragOffset) / swipeThreshold, 1.0)
     }
 
     private var dayLabel: String {
@@ -42,39 +51,43 @@ struct ContentView: View {
 
                 Spacer()
 
-                // ── Day label ────────────────────────────────────────────
                 Text(dayLabel)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .padding(.bottom, 24)
 
-                // ── Centered word display ─────────────────────────────────
-                VStack(spacing: 16) {
-                    Text(browsedWord.word)
-                        .font(.largeTitle)
-                        .bold()
-                        .multilineTextAlignment(.center)
+                // ── Card stack ────────────────────────────────────────────
+                ZStack {
 
-                    Divider()
-                        .padding(.horizontal, 40)
+                    // Background card — the word that will appear after a completed swipe.
+                    // Only rendered while the user is actively dragging.
+                    // Starts slightly scaled down and grows to full size as swipeProgress → 1.
+                    if abs(dragOffset) > 2 {
+                        let goingDown = dragOffset > 0
+                        let canShow   = goingDown || dayOffset < 0
+                        if canShow {
+                            wordContent(for: goingDown ? dayOffset - 1 : dayOffset + 1)
+                                .scaleEffect(0.88 + 0.12 * swipeProgress)
+                        }
+                    }
 
-                    Text(browsedWord.definition)
-                        .font(.body)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-
-                    Text("\u{201C}\(browsedWord.example)\u{201D}")
-                        .font(.callout)
-                        .italic()
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
+                    // Foreground card — follows the finger in real time.
+                    wordContent(for: dayOffset)
+                        .offset(y: dragOffset)
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    dragOffset = value.translation.height
+                                }
+                                .onEnded { value in
+                                    handleSwipeEnd(value)
+                                }
+                        )
                 }
 
                 Spacer()
 
                 // ── Word Bank button ──────────────────────────────────────
-                // NavigationLink pushes WordBankView onto the stack.
                 NavigationLink {
                     WordBankView()
                 } label: {
@@ -85,21 +98,7 @@ struct ContentView: View {
                 .padding(.horizontal, 32)
                 .padding(.bottom, 40)
             }
-            .gesture(
-                    DragGesture(minimumDistance: 40)
-                        .onEnded { value in
-                            withAnimation(.spring()) {
-                                if value.translation.height > 0 {
-                                    dayOffset -= 1
-                                } else if value.translation.height < 0 && dayOffset < 0 {
-                                    dayOffset += 1
-                                }
-                            }
-                        }
-                )
             .navigationBarHidden(true)
-            // onOpenURL handles deep links from tapping the widget.
-            // URL format: vocabwidget://word/{id}
             .sheet(item: $selectedWord) { word in
                 WordDetailView(word: word)
             }
@@ -110,6 +109,62 @@ struct ContentView: View {
                       let match = allWords.first(where: { $0.id == id })
                 else { return }
                 selectedWord = match
+            }
+        }
+    }
+
+    // ── Word content view ─────────────────────────────────────────────────────
+    // Extracted so we can render it for both the foreground and background card.
+    @ViewBuilder
+    private func wordContent(for offset: Int) -> some View {
+        let word = VocabularyStore.word(forDayOffset: offset)
+        VStack(spacing: 16) {
+            Text(word.word)
+                .font(.largeTitle)
+                .bold()
+                .multilineTextAlignment(.center)
+
+            Divider()
+                .padding(.horizontal, 40)
+
+            Text(word.definition)
+                .font(.body)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+
+            Text("\u{201C}\(word.example)\u{201D}")
+                .font(.callout)
+                .italic()
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+    }
+
+    // ── Swipe logic ───────────────────────────────────────────────────────────
+    private func handleSwipeEnd(_ value: DragGesture.Value) {
+        let distance  = value.translation.height
+        let predicted = value.predictedEndTranslation.height
+        let goingDown = distance > 0
+        let canSwipe  = goingDown || dayOffset < 0
+
+        // Complete if drag exceeded threshold OR flick velocity would carry it far enough.
+        let shouldComplete = canSwipe &&
+            (abs(distance) > swipeThreshold || abs(predicted) > swipeThreshold * 2)
+
+        if shouldComplete {
+            // Fly the card off screen, then update state once it's gone.
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                dragOffset = goingDown ? 1000 : -1000
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                dayOffset += goingDown ? -1 : 1
+                dragOffset = 0
+            }
+        } else {
+            // Not far enough — snap back with a bouncy spring.
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+                dragOffset = 0
             }
         }
     }
@@ -157,7 +212,6 @@ struct WordCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
 
-            // Word + part of speech on one line
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(word.word)
                     .font(.title2)
@@ -170,12 +224,10 @@ struct WordCard: View {
                     .foregroundStyle(isHighlighted ? .white.opacity(0.8) : .secondary)
             }
 
-            // Definition
             Text(word.definition)
                 .font(.body)
                 .foregroundStyle(isHighlighted ? .white : .primary)
 
-            // Example sentence
             Text("\u{201C}\(word.example)\u{201D}")
                 .font(.caption)
                 .italic()
