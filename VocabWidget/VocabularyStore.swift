@@ -210,9 +210,15 @@ struct VocabularyStore {
     // if the word list is shorter than 365 entries.
     // ---------------------------------------------------------
     static var wordOfTheDay: VocabularyWord {
+        word(forDayOffset: 0)
+    }
+
+    // Returns the word for a given day offset from today.
+    // offset 0 = today, -1 = yesterday, -2 = two days ago, etc.
+    static func word(forDayOffset offset: Int) -> VocabularyWord {
         let calendar = Calendar.current
-        // ordinality(of:in:for:) returns nil only for invalid combos — default to 1.
-        let dayOfYear = calendar.ordinality(of: .day, in: .year, for: Date()) ?? 1
+        let date = calendar.date(byAdding: .day, value: offset, to: Date()) ?? Date()
+        let dayOfYear = calendar.ordinality(of: .day, in: .year, for: date) ?? 1
         let index = (dayOfYear - 1) % words.count
         return words[index]
     }

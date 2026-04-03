@@ -13,22 +13,80 @@ import SwiftUI
 
 struct ContentView: View {
 
-    // We grab the word list and today's word at view init time.
-    // These don't change while the app is open, so plain `let` is fine.
     let allWords = VocabularyStore.words
-    let todayWord = VocabularyStore.wordOfTheDay
 
     // Track whether the detail sheet is showing.
     @State private var selectedWord: VocabularyWord? = nil
+
+    // 0 = today, -1 = yesterday, -2 = two days ago, etc.
+    // @State means SwiftUI re-renders the view whenever this changes.
+    @State private var dayOffset = 0
+
+    // Derives the displayed word from the current day offset.
+    private var browsedWord: VocabularyWord {
+        VocabularyStore.word(forDayOffset: dayOffset)
+    }
+
+    // Human-readable label for the current day offset.
+    private var dayLabel: String {
+        switch dayOffset {
+        case 0:  return "Today"
+        case -1: return "Yesterday"
+        default:
+            let date = Calendar.current.date(byAdding: .day, value: dayOffset, to: Date()) ?? Date()
+            let fmt = DateFormatter()
+            fmt.dateFormat = "EEEE, MMM d"
+            return fmt.string(from: date)
+        }
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
 
-                    // ── Today's Word ──────────────────────────────────────
-                    WordCard(word: todayWord, isHighlighted: true)
-                        .padding(.top, 8)
+                    // ── Swipeable Day Card ────────────────────────────────
+                    // DragGesture detects horizontal swipes.
+                    // Swipe left  → go back a day (dayOffset - 1)
+                    // Swipe right → go forward a day (dayOffset + 1, capped at 0)
+                    VStack(spacing: 8) {
+                        HStack {
+                            Button {
+                                withAnimation(.spring()) { dayOffset -= 1 }
+                            } label: {
+                                Image(systemName: "chevron.left")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(dayLabel)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                withAnimation(.spring()) { dayOffset += 1 }
+                            } label: {
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(dayOffset < 0 ? .secondary : .tertiary)
+                            }
+                            .disabled(dayOffset == 0)
+                        }
+                        .padding(.horizontal)
+
+                        WordCard(word: browsedWord, isHighlighted: true)
+                            .gesture(
+                                DragGesture(minimumDistance: 40)
+                                    .onEnded { value in
+                                        withAnimation(.spring()) {
+                                            if value.translation.width < 0 {
+                                                dayOffset -= 1
+                                            } else if value.translation.width > 0 && dayOffset < 0 {
+                                                dayOffset += 1
+                                            }
+                                        }
+                                    }
+                            )
+                    }
+                    .padding(.top, 8)
 
                     // ── All Words ─────────────────────────────────────────
                     HStack {
