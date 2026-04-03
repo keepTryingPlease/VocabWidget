@@ -58,6 +58,17 @@ struct ContentView: View {
                 // Sheet slides up when a word card is tapped.
                 WordDetailView(word: word)
             }
+            // onOpenURL handles deep links from the widget.
+            // When the user taps the widget, the system opens the app with the URL
+            // "vocabwidget://word/{id}". We parse the id and open that word's detail sheet.
+            .onOpenURL { url in
+                guard url.scheme == "vocabwidget",
+                      url.host == "word",
+                      let id = Int(url.lastPathComponent),
+                      let match = allWords.first(where: { $0.id == id })
+                else { return }
+                selectedWord = match
+            }
         }
     }
 }

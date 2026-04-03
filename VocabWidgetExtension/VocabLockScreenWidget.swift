@@ -191,6 +191,8 @@ struct VocabLockScreenWidget: Widget {
                 // containerBackground replaces the old .padding()/.background() approach
                 // in WidgetKit — required on iOS 17+ for system widgets.
                 .containerBackground(.fill.tertiary, for: .widget)
+                // widgetURL: tapping the widget opens the app and deep-links to this word.
+                .widgetURL(URL(string: "vocabwidget://word/\(entry.word.id)"))
         }
         .configurationDisplayName("Word of the Day")
         .description("A new vocabulary word every day on your lock screen.")
