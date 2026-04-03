@@ -141,20 +141,19 @@ struct ContentView: View {
         let word = VocabularyStore.word(forDayOffset: offset)
         VStack(spacing: 16) {
             Text(word.word)
-                .font(.largeTitle)
-                .bold()
+                .font(.custom("PlayfairDisplay-Bold", size: 36))
                 .multilineTextAlignment(.center)
 
             Divider()
                 .padding(.horizontal, 40)
 
             Text(word.definition)
-                .font(.body)
+                .font(.custom("Inter_18pt-Regular", size: 17))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
 
             Text("\u{201C}\(word.example)\u{201D}")
-                .font(.callout)
+                .font(.custom("Inter_18pt-Regular", size: 15))
                 .italic()
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
