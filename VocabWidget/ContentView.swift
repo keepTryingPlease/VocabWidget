@@ -74,11 +74,6 @@ struct ContentView: View {
                         .bold()
                         .multilineTextAlignment(.center)
 
-                    Text(browsedWord.partOfSpeech)
-                        .font(.subheadline)
-                        .italic()
-                        .foregroundStyle(.secondary)
-
                     Divider()
                         .padding(.horizontal, 40)
 
