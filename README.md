@@ -5,6 +5,24 @@ Built with SwiftUI + WidgetKit. No API calls. Local word list only.
 
 ---
 
+## git repo
+https://github.com/keepTryingPlease/VocabWidget
+
+---
+
+## Widget Placements
+
+| Placement | Family | Shows |
+|---|---|---|
+| Home screen (full width) | `.systemMedium` | Word, part of speech, definition, example sentence |
+| Lock screen rectangle | `.accessoryRectangular` | Word + part of speech on one line, definition up to 4 lines |
+| Lock screen inline | `.accessoryInline` | Word · part of speech (single line) |
+| Lock screen circle | `.accessoryCircular` | Word only |
+
+**To add the home screen widget:** long-press home screen → Edit → Add Widget → search "Word of the Day" → select the medium (wide) size.
+
+---
+
 ## File Map
 
 ```

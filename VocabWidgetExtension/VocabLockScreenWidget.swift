@@ -100,6 +100,32 @@ struct VocabWidgetEntryView: View {
     var body: some View {
         switch family {
 
+        // ── Medium home screen: full width, shows word + definition + example ─
+        case .systemMedium:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(entry.word.word)
+                        .font(.title2)
+                        .bold()
+                    Text(entry.word.partOfSpeech)
+                        .font(.subheadline)
+                        .italic()
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(entry.word.definition)
+                    .font(.subheadline)
+                    .lineLimit(2)
+
+                Text("\u{201C}\(entry.word.example)\u{201D}")
+                    .font(.caption)
+                    .italic()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding()
+
         // ── Single line: shown at the very top of the lock screen ────────────
         case .accessoryInline:
             // Keep it short — only a few words fit here.
@@ -108,20 +134,22 @@ struct VocabWidgetEntryView: View {
 
         // ── Rectangle: most useful layout, shows word + short definition ─────
         case .accessoryRectangular:
-            VStack(alignment: .leading, spacing: 3) {
-                Text(entry.word.word)
-                    .font(.headline)
-                    .bold()
-                    .lineLimit(1)
-
-                Text(entry.word.partOfSpeech)
-                    .font(.caption2)
-                    .italic()
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(entry.word.word)
+                        .font(.caption)
+                        .bold()
+                        .lineLimit(1)
+                    Text("· \(entry.word.partOfSpeech)")
+                        .font(.caption2)
+                        .italic()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
 
                 Text(entry.word.definition)
-                    .font(.caption)
-                    .lineLimit(2)
+                    .font(.caption2)
+                    .lineLimit(4)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -167,6 +195,7 @@ struct VocabLockScreenWidget: Widget {
         .configurationDisplayName("Word of the Day")
         .description("A new vocabulary word every day on your lock screen.")
         .supportedFamilies([
+            .systemMedium,
             .accessoryInline,
             .accessoryRectangular,
             .accessoryCircular
