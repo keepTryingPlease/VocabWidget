@@ -42,32 +42,13 @@ struct ContentView: View {
 
                 Spacer()
 
-                // ── Day navigation ────────────────────────────────────────
-                HStack {
-                    Button {
-                        withAnimation(.spring()) { dayOffset -= 1 }
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text(dayLabel)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        withAnimation(.spring()) { dayOffset += 1 }
-                    } label: {
-                        Image(systemName: "chevron.right")
-                            .foregroundStyle(dayOffset < 0 ? .secondary : .tertiary)
-                    }
-                    .disabled(dayOffset == 0)
-                }
-                .padding(.horizontal, 32)
-                .padding(.bottom, 24)
+                // ── Day label ────────────────────────────────────────────
+                Text(dayLabel)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 24)
 
                 // ── Centered word display ─────────────────────────────────
-                // All text is center-aligned. Swipe left/right to change day.
                 VStack(spacing: 16) {
                     Text(browsedWord.word)
                         .font(.largeTitle)
@@ -89,18 +70,6 @@ struct ContentView: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)
                 }
-                .gesture(
-                    DragGesture(minimumDistance: 40)
-                        .onEnded { value in
-                            withAnimation(.spring()) {
-                                if value.translation.width < 0 {
-                                    dayOffset -= 1
-                                } else if value.translation.width > 0 && dayOffset < 0 {
-                                    dayOffset += 1
-                                }
-                            }
-                        }
-                )
 
                 Spacer()
 
@@ -116,6 +85,18 @@ struct ContentView: View {
                 .padding(.horizontal, 32)
                 .padding(.bottom, 40)
             }
+            .gesture(
+                    DragGesture(minimumDistance: 40)
+                        .onEnded { value in
+                            withAnimation(.spring()) {
+                                if value.translation.height > 0 {
+                                    dayOffset -= 1
+                                } else if value.translation.height < 0 && dayOffset < 0 {
+                                    dayOffset += 1
+                                }
+                            }
+                        }
+                )
             .navigationBarHidden(true)
             // onOpenURL handles deep links from tapping the widget.
             // URL format: vocabwidget://word/{id}
