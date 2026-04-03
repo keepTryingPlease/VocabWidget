@@ -14,6 +14,13 @@
 
 import SwiftUI
 
+// App-wide colour palette
+private extension Color {
+    static let appBackground = Color(red: 0.14, green: 0.14, blue: 0.15)
+    static let appPrimary    = Color(red: 0.94, green: 0.93, blue: 0.90)
+    static let appSecondary  = Color(red: 0.55, green: 0.54, blue: 0.52)
+}
+
 struct ContentView: View {
 
     let allWords = VocabularyStore.words
@@ -54,7 +61,7 @@ struct ContentView: View {
 
                 Text(dayLabel)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.appSecondary)
                     .padding(.bottom, 24)
 
                 // ── Card stack ────────────────────────────────────────────
@@ -96,10 +103,12 @@ struct ContentView: View {
                 } label: {
                     if isFetchingAudio {
                         ProgressView()
+                            .tint(Color.appSecondary)
                             .frame(width: 44, height: 44)
                     } else {
                         Image(systemName: "speaker.wave.2")
                             .font(.title2)
+                            .foregroundStyle(Color.appSecondary)
                             .frame(width: 44, height: 44)
                     }
                 }
@@ -112,12 +121,17 @@ struct ContentView: View {
                     WordBankView()
                 } label: {
                     Label("Word Bank", systemImage: "books.vertical")
+                        .font(.custom("Inter_18pt-Regular", size: 16))
+                        .foregroundStyle(Color.appPrimary)
                         .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.appPrimary.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
-                .buttonStyle(.borderedProminent)
                 .padding(.horizontal, 32)
                 .padding(.bottom, 40)
             }
+            .background(Color.appBackground.ignoresSafeArea())
             .navigationBarHidden(true)
             .onChange(of: dayOffset) { _, _ in isFetchingAudio = false }
             .sheet(item: $selectedWord) { word in
@@ -142,20 +156,23 @@ struct ContentView: View {
         VStack(spacing: 16) {
             Text(word.word)
                 .font(.custom("PlayfairDisplay-Bold", size: 36))
+                .foregroundStyle(Color.appPrimary)
                 .multilineTextAlignment(.center)
 
             Divider()
+                .overlay(Color.appSecondary.opacity(0.4))
                 .padding(.horizontal, 40)
 
             Text(word.definition)
                 .font(.custom("Inter_18pt-Regular", size: 17))
+                .foregroundStyle(Color.appPrimary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
 
             Text("\u{201C}\(word.example)\u{201D}")
                 .font(.custom("Inter_18pt-Regular", size: 15))
                 .italic()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.appSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
         }
@@ -213,8 +230,10 @@ struct WordBankView: View {
             .padding(.horizontal)
             .padding(.vertical, 16)
         }
+        .background(Color.appBackground.ignoresSafeArea())
         .navigationTitle("Word Bank")
         .navigationBarTitleDisplayMode(.large)
+        .toolbarColorScheme(.dark, for: .navigationBar)
         .sheet(item: $selectedWord) { word in
             WordDetailView(word: word)
         }
