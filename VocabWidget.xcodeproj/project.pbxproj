@@ -56,6 +56,7 @@
 			membershipExceptions = (
 				VocabularyStore.swift,
 				VocabularyWord.swift,
+				words.json,
 			);
 			target = B7DFE26C2F80480E00E35497 /* VocabWidgetExtensionExtension */;
 		};

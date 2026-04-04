@@ -11,4 +11,6 @@ struct VocabularyWord: Identifiable, Codable {
     let partOfSpeech: String   // e.g. "noun", "adjective", "verb"
     let definition: String
     let example: String
+    let level: String          // "beginner", "intermediate", "advanced"
+    let isFeatured: Bool       // true = eligible for lock screen word of the day
 }
