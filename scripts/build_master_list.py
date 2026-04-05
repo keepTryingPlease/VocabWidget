@@ -149,6 +149,8 @@ MAX_SYNONYMS     = 12   # ceiling after merging both APIs
 DAILY_QUOTA      = _args.quota
 WARN_AT_80_PCT   = int(DAILY_QUOTA * 0.80)
 WARN_AT_95_PCT   = int(DAILY_QUOTA * 0.95)
+WORDSAPI_DELAY   = _args.delay
+FREEDICT_DELAY   = 0.30
 
 _level_label = f"{WORDS_PER_LEVEL} words" if WORDS_PER_LEVEL else "auto-balance (max even)"
 print(f"\n  Quota this session : {DAILY_QUOTA:,} WordsAPI calls")
