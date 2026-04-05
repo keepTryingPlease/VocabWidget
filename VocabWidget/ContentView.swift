@@ -31,8 +31,12 @@ private extension Color {
 struct ContentView: View {
 
     let allWords = VocabularyStore.words
-    @State private var selectedWord: VocabularyWord? = nil
-    @State private var infoWord:     VocabularyWord? = nil
+    @StateObject private var library = UserLibrary()
+
+    @State private var selectedWord:       VocabularyWord? = nil
+    @State private var infoWord:           VocabularyWord? = nil
+    @State private var collectionsWord:    VocabularyWord? = nil
+    @State private var showingLibrary    = false
 
     // Active vocabulary level. Changing it resets the deck to position 0.
     @State private var selectedLevel: String = "beginner"
@@ -121,6 +125,12 @@ struct ContentView: View {
             .sheet(item: $infoWord) { word in
                 WordInfoView(word: word)
             }
+            .sheet(isPresented: $showingLibrary) {
+                LibraryView(library: library)
+            }
+            .sheet(item: $collectionsWord) { word in
+                CollectionsPickerView(word: word, library: library)
+            }
             .onOpenURL { url in
                 guard url.scheme == "vocabwidget",
                       url.host == "word",
@@ -196,15 +206,33 @@ struct ContentView: View {
             Spacer()
 
             // ── Action buttons ────────────────────────────────────────
+            let currentWord = word(forOffset: dayOffset)
             HStack(spacing: 0) {
-                actionButton(icon: "info.circle",     label: "Info") {
-                    infoWord = word(forOffset: dayOffset)
+                actionButton(icon: "info.circle", label: "Info") {
+                    infoWord = currentWord
                 }
-                actionButton(icon: "heart",           label: "Like")
-                actionButton(icon: "checkmark.seal",  label: "Mastered")
-                actionButton(icon: "square.stack",    label: "Collections")
+                actionButton(
+                    icon:  library.isLiked(currentWord) ? "heart.fill" : "heart",
+                    label: "Like",
+                    color: library.isLiked(currentWord) ? Color(red: 0.95, green: 0.35, blue: 0.35) : Color.appSecondary
+                ) {
+                    library.toggleLike(currentWord)
+                }
+                actionButton(
+                    icon:  library.isMastered(currentWord) ? "checkmark.seal.fill" : "checkmark.seal",
+                    label: "Mastered",
+                    color: library.isMastered(currentWord) ? Color(red: 0.35, green: 0.85, blue: 0.55) : Color.appSecondary
+                ) {
+                    library.toggleMastered(currentWord)
+                }
+                actionButton(icon: "square.stack", label: "Collections") {
+                    collectionsWord = currentWord
+                }
+                actionButton(icon: "list.bullet", label: "Library") {
+                    showingLibrary = true
+                }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 8)
             .padding(.bottom, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -216,19 +244,20 @@ struct ContentView: View {
     private func actionButton(
         icon: String,
         label: String,
+        color: Color = Color.appSecondary,
         action: @escaping () -> Void = {}
     ) -> some View {
         Button(action: action) {
-            VStack(spacing: 6) {
+            VStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 22))
-                    .foregroundStyle(Color.appSecondary)
+                    .font(.system(size: 19))
+                    .foregroundStyle(color)
                 Text(label)
-                    .font(.custom("Inter_18pt-Regular", size: 10))
-                    .foregroundStyle(Color.appSecondary)
+                    .font(.custom("Inter_18pt-Regular", size: 9))
+                    .foregroundStyle(color)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
         }
     }
 
