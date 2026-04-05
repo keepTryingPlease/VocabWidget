@@ -26,7 +26,10 @@ struct ContentView: View {
     let allWords = VocabularyStore.words
     @State private var selectedWord: VocabularyWord? = nil
 
-    // Which day we're viewing. 0 = today, -1 = yesterday, etc.
+    // Active vocabulary level. Changing it resets the deck to position 0.
+    @State private var selectedLevel: String = "beginner"
+
+    // Position in the current level's deck. 0 = first card, -1 = second, etc.
     @State private var dayOffset = 0
 
     // How far the user has dragged the foreground card. Drives real-time movement.
@@ -41,15 +44,25 @@ struct ContentView: View {
         min(abs(dragOffset) / swipeThreshold, 1.0)
     }
 
-    private var dayLabel: String {
-        switch dayOffset {
-        case 0:  return "Today"
-        case -1: return "Yesterday"
-        default:
-            let date = Calendar.current.date(byAdding: .day, value: dayOffset, to: Date()) ?? Date()
-            let fmt = DateFormatter()
-            fmt.dateFormat = "EEEE, MMM d"
-            return fmt.string(from: date)
+    // Words filtered to the active level, in their shuffled deck order.
+    private var filteredWords: [VocabularyWord] {
+        VocabularyStore.words.filter { $0.level == selectedLevel }
+    }
+
+    // Returns the word at a given deck offset within the active level.
+    private func word(forOffset offset: Int) -> VocabularyWord {
+        guard !filteredWords.isEmpty else { return VocabularyStore.words[0] }
+        let count = filteredWords.count
+        let index = (((-offset) % count) + count) % count
+        return filteredWords[index]
+    }
+
+    private var levelDisplayName: String {
+        switch selectedLevel {
+        case "beginner":     return "Beginner"
+        case "intermediate": return "Intermediate"
+        case "advanced":     return "Advanced"
+        default:             return selectedLevel.capitalized
         }
     }
 
@@ -59,10 +72,42 @@ struct ContentView: View {
 
                 Spacer()
 
-                Text(dayLabel)
-                    .font(.subheadline)
-                    .foregroundStyle(Color.appSecondary)
-                    .padding(.bottom, 24)
+                // ── Level selector pill ───────────────────────────────────
+                Menu {
+                    Button {
+                        selectedLevel = "beginner"
+                        dayOffset = 0
+                    } label: {
+                        Label("Beginner", systemImage: selectedLevel == "beginner" ? "checkmark" : "")
+                    }
+                    Button {
+                        selectedLevel = "intermediate"
+                        dayOffset = 0
+                    } label: {
+                        Label("Intermediate", systemImage: selectedLevel == "intermediate" ? "checkmark" : "")
+                    }
+                    Button {
+                        selectedLevel = "advanced"
+                        dayOffset = 0
+                    } label: {
+                        Label("Advanced", systemImage: selectedLevel == "advanced" ? "checkmark" : "")
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(levelDisplayName)
+                            .font(.custom("Inter_18pt-Regular", size: 13))
+                            .foregroundStyle(Color.appPrimary)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.appSecondary)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 9)
+                    .background(Color.appPrimary.opacity(0.07))
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.35), lineWidth: 1))
+                }
+                .padding(.bottom, 24)
 
                 // ── Card stack ────────────────────────────────────────────
                 ZStack {
@@ -81,6 +126,7 @@ struct ContentView: View {
 
                     // Foreground card — follows the finger in real time.
                     wordContent(for: dayOffset)
+
                         .offset(y: dragOffset)
                         .gesture(
                             DragGesture()
@@ -97,7 +143,7 @@ struct ContentView: View {
                 Button {
                     Task {
                         isFetchingAudio = true
-                        await PronunciationService.shared.speak(VocabularyStore.word(forDayOffset: dayOffset).word)
+                        await PronunciationService.shared.speak(word(forOffset: dayOffset).word)
                         isFetchingAudio = false
                     }
                 } label: {
@@ -133,7 +179,8 @@ struct ContentView: View {
             }
             .background(Color.appBackground.ignoresSafeArea())
             .navigationBarHidden(true)
-            .onChange(of: dayOffset) { _, _ in isFetchingAudio = false }
+            .onChange(of: dayOffset)      { _, _ in isFetchingAudio = false }
+            .onChange(of: selectedLevel)  { _, _ in isFetchingAudio = false }
             .sheet(item: $selectedWord) { word in
                 WordDetailView(word: word)
             }
@@ -152,7 +199,7 @@ struct ContentView: View {
     // Extracted so we can render it for both the foreground and background card.
     @ViewBuilder
     private func wordContent(for offset: Int) -> some View {
-        let word = VocabularyStore.word(forDayOffset: offset)
+        let word = word(forOffset: offset)
         VStack(spacing: 16) {
             Text(word.word)
                 .font(.custom("PlayfairDisplay-Bold", size: 36))
