@@ -114,7 +114,7 @@ struct LibraryView: View {
             emptyState(icon: emptyIcon, message: emptyMessage, hint: emptyHint)
         } else {
             List(words) { word in
-                Button { detailWord = word } label: { wordRow(word) }
+                wordRow(word)
                     .listRowBackground(Color.appBackground)
                     .listRowSeparatorTint(Color.appSecondary.opacity(0.2))
             }
@@ -168,25 +168,63 @@ struct LibraryView: View {
 
     @ViewBuilder
     private func wordRow(_ word: VocabularyWord) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(word.word)
-                    .font(.custom("PlayfairDisplay-Bold", size: 17))
-                    .foregroundStyle(Color.appPrimary)
-                Spacer()
-                Text(word.level.capitalized)
-                    .font(.custom("Inter_18pt-Regular", size: 11))
-                    .foregroundStyle(Color.appSecondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.appPrimary.opacity(0.07))
-                    .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.3), lineWidth: 0.5))
+        VStack(alignment: .leading, spacing: 8) {
+
+            // ── Word header + definition (tap to open detail) ─────────
+            Button { detailWord = word } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(word.word)
+                            .font(.custom("PlayfairDisplay-Bold", size: 17))
+                            .foregroundStyle(Color.appPrimary)
+                        Spacer()
+                        Text(word.level.capitalized)
+                            .font(.custom("Inter_18pt-Regular", size: 11))
+                            .foregroundStyle(Color.appSecondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.appPrimary.opacity(0.07))
+                            .clipShape(Capsule())
+                            .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.3), lineWidth: 0.5))
+                    }
+                    Text(word.definition)
+                        .font(.custom("Inter_18pt-Regular", size: 13))
+                        .foregroundStyle(Color.appSecondary)
+                        .lineLimit(2)
+                }
             }
-            Text(word.definition)
-                .font(.custom("Inter_18pt-Regular", size: 13))
-                .foregroundStyle(Color.appSecondary)
-                .lineLimit(2)
+            .buttonStyle(.plain)
+
+            // ── Like / Mastered icons ─────────────────────────────────
+            HStack(spacing: 18) {
+                Button { library.toggleLike(word) } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: library.isLiked(word) ? "heart.fill" : "heart")
+                        Text("Like")
+                    }
+                    .font(.system(size: 13))
+                    .foregroundStyle(
+                        library.isLiked(word)
+                            ? Color(red: 0.95, green: 0.35, blue: 0.35)
+                            : Color.appSecondary
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Button { library.toggleMastered(word) } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: library.isMastered(word) ? "checkmark.seal.fill" : "checkmark.seal")
+                        Text("Mastered")
+                    }
+                    .font(.system(size: 13))
+                    .foregroundStyle(
+                        library.isMastered(word)
+                            ? Color(red: 0.35, green: 0.85, blue: 0.55)
+                            : Color.appSecondary
+                    )
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.vertical, 6)
     }
