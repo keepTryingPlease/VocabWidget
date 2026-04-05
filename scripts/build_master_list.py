@@ -78,6 +78,7 @@ When done, review and copy into the app:
   cp words_generated.json VocabWidget/words.json
 """
 
+import argparse
 import json
 import os
 import sys
@@ -85,6 +86,42 @@ import time
 import pathlib
 import http.client
 import urllib.parse
+
+# ── CLI arguments ─────────────────────────────────────────────────────────────
+
+_parser = argparse.ArgumentParser(
+    description="Build the VocabWidget master word list.",
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    epilog="""
+Examples
+────────
+  # Use full upgraded quota (25 000 calls) to score everything in one run:
+  python3 scripts/build_master_list.py --quota 25000
+
+  # Build 700 words per level instead of the default 500:
+  python3 scripts/build_master_list.py --quota 25000 --words-per-level 700
+
+  # Dry-run with a small quota to test caching / output without burning calls:
+  python3 scripts/build_master_list.py --quota 50
+""",
+)
+_parser.add_argument(
+    "--quota",
+    type=int,
+    default=2500,
+    metavar="N",
+    help="Maximum WordsAPI calls for this session (default: 2500). "
+         "Set to your plan's daily limit, e.g. --quota 25000.",
+)
+_parser.add_argument(
+    "--words-per-level",
+    type=int,
+    default=500,
+    metavar="N",
+    dest="words_per_level",
+    help="Target number of words to select per difficulty level (default: 500).",
+)
+_args = _parser.parse_args()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -97,12 +134,15 @@ SCORES_CACHE     = CACHE_DIR / "candidate_scores.json"
 ENRICHMENT_CACHE = CACHE_DIR / "enrichment.json"
 OUTPUT_FILE      = pathlib.Path("words_generated.json")
 
-WORDS_PER_LEVEL  = 500
+WORDS_PER_LEVEL  = _args.words_per_level
 MAX_EXAMPLES     = 2    # try to reach this from both APIs combined
 MAX_SYNONYMS     = 12   # ceiling after merging both APIs
-DAILY_QUOTA      = 2500
-WARN_AT_80_PCT   = int(DAILY_QUOTA * 0.80)   # 2 000
-WARN_AT_95_PCT   = int(DAILY_QUOTA * 0.95)   # 2 375
+DAILY_QUOTA      = _args.quota
+WARN_AT_80_PCT   = int(DAILY_QUOTA * 0.80)
+WARN_AT_95_PCT   = int(DAILY_QUOTA * 0.95)
+
+print(f"\n  Quota this session : {DAILY_QUOTA:,} WordsAPI calls")
+print(f"  Target per level   : {WORDS_PER_LEVEL} words")
 
 PREFERRED_POS = ["adjective", "verb", "noun", "adverb"]
 
