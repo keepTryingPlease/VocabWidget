@@ -279,30 +279,74 @@ struct CollectionDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(words) { word in
-                    Button { detailWord = word } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(word.word)
-                                    .font(.custom("PlayfairDisplay-Bold", size: 17))
-                                    .foregroundStyle(Color.appPrimary)
-                                Spacer()
-                                Text(word.level.capitalized)
-                                    .font(.custom("Inter_18pt-Regular", size: 11))
+                    VStack(alignment: .leading, spacing: 8) {
+
+                        // ── Word header + definition (tap to open detail) ─
+                        Button { detailWord = word } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(word.word)
+                                        .font(.custom("PlayfairDisplay-Bold", size: 17))
+                                        .foregroundStyle(Color.appPrimary)
+                                    Spacer()
+                                    Text(word.level.capitalized)
+                                        .font(.custom("Inter_18pt-Regular", size: 11))
+                                        .foregroundStyle(Color.appSecondary)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.appPrimary.opacity(0.07))
+                                        .clipShape(Capsule())
+                                        .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.3), lineWidth: 0.5))
+                                }
+                                Text(word.definition)
+                                    .font(.custom("Inter_18pt-Regular", size: 13))
                                     .foregroundStyle(Color.appSecondary)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(Color.appPrimary.opacity(0.07))
-                                    .clipShape(Capsule())
+                                    .lineLimit(2)
                             }
-                            Text(word.definition)
-                                .font(.custom("Inter_18pt-Regular", size: 13))
-                                .foregroundStyle(Color.appSecondary)
-                                .lineLimit(2)
                         }
-                        .padding(.vertical, 6)
+                        .buttonStyle(.plain)
+
+                        // ── Like / Mastered icons ─────────────────────────
+                        HStack(spacing: 18) {
+                            Button { library.toggleLike(word) } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: library.isLiked(word) ? "heart.fill" : "heart")
+                                    Text("Like")
+                                }
+                                .font(.system(size: 13))
+                                .foregroundStyle(
+                                    library.isLiked(word)
+                                        ? Color(red: 0.95, green: 0.35, blue: 0.35)
+                                        : Color(red: 0.55, green: 0.54, blue: 0.52)
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            Button { library.toggleMastered(word) } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: library.isMastered(word) ? "checkmark.seal.fill" : "checkmark.seal")
+                                    Text("Mastered")
+                                }
+                                .font(.system(size: 13))
+                                .foregroundStyle(
+                                    library.isMastered(word)
+                                        ? Color(red: 0.35, green: 0.85, blue: 0.55)
+                                        : Color(red: 0.55, green: 0.54, blue: 0.52)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
+                    .padding(.vertical, 6)
                     .listRowBackground(Color.appBackground)
                     .listRowSeparatorTint(Color.appSecondary.opacity(0.2))
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            library.toggleWord(word, inCollection: name)
+                        } label: {
+                            Label("Remove", systemImage: "minus.circle")
+                        }
+                    }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
