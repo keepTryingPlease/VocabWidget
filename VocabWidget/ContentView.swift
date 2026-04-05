@@ -35,13 +35,8 @@ struct ContentView: View {
     @StateObject private var scheduler         = DeckScheduler()
     @StateObject private var milestoneManager  = MilestoneManager()
 
-    @State private var toastMilestone:       Milestone? = nil
     @State private var celebrationMilestone: Milestone? = nil
-
-    // ── DEBUG ONLY — remove before release ───────────────────────────────────
-    #if DEBUG
-    @State private var debugMilestoneIndex = 0
-    #endif
+    @State private var showingMilestones    = false
 
     @State private var selectedWord:       VocabularyWord? = nil
     @State private var infoWord:           VocabularyWord? = nil
@@ -173,41 +168,27 @@ struct ContentView: View {
             .sheet(item: $celebrationMilestone) { milestone in
                 MilestoneCelebrationView(milestone: milestone)
             }
-            .overlay(alignment: .bottom) {
-                if let milestone = toastMilestone {
-                    MilestoneToastView(milestone: milestone)
-                        .padding(.bottom, 100)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+            .sheet(isPresented: $showingMilestones) {
+                MilestoneProgressView(milestoneManager: milestoneManager, library: library)
             }
-            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: toastMilestone?.id)
-            // ── DEBUG ONLY — remove before release ───────────────────────
-            #if DEBUG
             .overlay(alignment: .topLeading) {
-                Button {
-                    let milestone = Milestone.all[debugMilestoneIndex % Milestone.all.count]
-                    debugMilestoneIndex += 1
-                    if milestone.isBig {
-                        celebrationMilestone = milestone
-                    } else {
-                        toastMilestone = milestone
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                            toastMilestone = nil
-                        }
+                Button { showingMilestones = true } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "trophy.fill")
+                            .font(.system(size: 10, weight: .medium))
+                        Text("\(milestoneManager.shownCounts.count)/\(Milestone.all.count)")
+                            .font(.system(size: 11, weight: .medium))
                     }
-                } label: {
-                    Text("🏆 \(debugMilestoneIndex % Milestone.all.count + 1)/\(Milestone.all.count)")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.red.opacity(0.7))
-                        .clipShape(Capsule())
+                    .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.12))
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder(Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.25), lineWidth: 0.5))
                 }
                 .padding(.top, 56)
-                .padding(.leading, 16)
+                .padding(.leading, 24)
             }
-            #endif
             .onOpenURL { url in
                 guard url.scheme == "vocabwidget",
                       url.host == "word",
@@ -303,17 +284,9 @@ struct ContentView: View {
                     let wasAlreadyMastered = library.isMastered(currentWord)
                     library.toggleMastered(currentWord)
                     clampOffset()
-                    if !wasAlreadyMastered {
-                        if let hit = milestoneManager.milestone(forNewCount: library.masteredIDs.count) {
-                            if hit.isBig {
-                                celebrationMilestone = hit
-                            } else {
-                                toastMilestone = hit
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                                    toastMilestone = nil
-                                }
-                            }
-                        }
+                    if !wasAlreadyMastered,
+                       let hit = milestoneManager.milestone(forNewCount: library.masteredIDs.count) {
+                        celebrationMilestone = hit
                     }
                 }
                 actionButton(icon: "square.stack", label: "Collections") {

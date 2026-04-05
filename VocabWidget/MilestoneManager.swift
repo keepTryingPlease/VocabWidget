@@ -26,25 +26,25 @@ extension Milestone {
             count: 1,    icon: "checkmark.circle",
             title: "First Word Mastered",
             message: "The journey begins. One down, everything else ahead.",
-            isBig: false
+            isBig: true
         ),
         Milestone(
             count: 5,    icon: "star",
             title: "5 Words!",
             message: "Your brain is warming up.",
-            isBig: false
+            isBig: true
         ),
         Milestone(
             count: 10,   icon: "bolt.fill",
             title: "10 Words Mastered!",
             message: "Keep it up!",
-            isBig: false
+            isBig: true
         ),
         Milestone(
             count: 25,   icon: "flame.fill",
             title: "25 Words!",
             message: "You're getting somewhere.",
-            isBig: false
+            isBig: true
         ),
         Milestone(
             count: 50,   icon: "eyeglasses",
@@ -101,7 +101,7 @@ extension Milestone {
 
 class MilestoneManager: ObservableObject {
 
-    private var shownCounts: Set<Int>
+    @Published private(set) var shownCounts: Set<Int>
     private let storageKey = "shownMilestoneCounts"
 
     init() {
