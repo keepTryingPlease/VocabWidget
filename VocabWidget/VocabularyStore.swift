@@ -85,8 +85,9 @@ struct VocabularyStore {
             // Fallback placeholder if JSON failed to load.
             return VocabularyWord(id: 0, word: "Serendipity", partOfSpeech: "noun",
                                   definition: "A happy accident.",
-                                  example: "Finding the café was pure serendipity.",
-                                  level: "beginner", isFeatured: true)
+                                  examples: ["Finding the café was pure serendipity."],
+                                  synonyms: [], origin: nil,
+                                  level: "beginner", isFeatured: true, mastered: false)
         }
         // Wrap the offset around the full word list.
         // dayOffset 0 = words[0], -1 = words[last], etc.

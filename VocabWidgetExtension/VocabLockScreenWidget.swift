@@ -113,7 +113,7 @@ struct VocabWidgetEntryView: View {
                     .font(.subheadline)
                     .lineLimit(2)
 
-                Text("\u{201C}\(entry.word.example)\u{201D}")
+                Text("\u{201C}\(entry.word.examples.first ?? "")\u{201D}")
                     .font(.caption)
                     .italic()
                     .foregroundStyle(.secondary)

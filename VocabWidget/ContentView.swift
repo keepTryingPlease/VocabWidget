@@ -252,12 +252,14 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
 
-            Text("\u{201C}\(word.example)\u{201D}")
-                .font(.custom("Inter_18pt-Regular", size: 15))
-                .italic()
-                .foregroundStyle(Color.appSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
+            if let example = word.examples.first {
+                Text("\u{201C}\(example)\u{201D}")
+                    .font(.custom("Inter_18pt-Regular", size: 15))
+                    .italic()
+                    .foregroundStyle(Color.appSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
         }
     }
 
@@ -340,14 +342,21 @@ struct WordDetailView: View {
                             .font(.body)
                     }
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("Example", systemImage: "quote.opening")
-                            .font(.headline)
-                            .foregroundStyle(.blue)
-                        Text("\u{201C}\(word.example)\u{201D}")
-                            .font(.body)
-                            .italic()
-                            .foregroundStyle(.secondary)
+                    if !word.examples.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(word.examples.count > 1 ? "Examples" : "Example",
+                                  systemImage: "quote.opening")
+                                .font(.headline)
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(word.examples, id: \.self) { example in
+                                    Text("\u{201C}\(example)\u{201D}")
+                                        .font(.body)
+                                        .italic()
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                     }
                 }
                 .padding()
