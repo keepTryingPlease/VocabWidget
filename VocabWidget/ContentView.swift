@@ -31,8 +31,12 @@ private extension Color {
 struct ContentView: View {
 
     let allWords = VocabularyStore.words
-    @StateObject private var library   = UserLibrary()
-    @StateObject private var scheduler = DeckScheduler()
+    @StateObject private var library           = UserLibrary()
+    @StateObject private var scheduler         = DeckScheduler()
+    @StateObject private var milestoneManager  = MilestoneManager()
+
+    @State private var toastMilestone:       Milestone? = nil
+    @State private var celebrationMilestone: Milestone? = nil
 
     @State private var selectedWord:       VocabularyWord? = nil
     @State private var infoWord:           VocabularyWord? = nil
@@ -161,6 +165,17 @@ struct ContentView: View {
             .sheet(item: $collectionsWord) { word in
                 CollectionsPickerView(word: word, library: library)
             }
+            .sheet(item: $celebrationMilestone) { milestone in
+                MilestoneCelebrationView(milestone: milestone)
+            }
+            .overlay(alignment: .bottom) {
+                if let milestone = toastMilestone {
+                    MilestoneToastView(milestone: milestone)
+                        .padding(.bottom, 100)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: toastMilestone?.id)
             .onOpenURL { url in
                 guard url.scheme == "vocabwidget",
                       url.host == "word",
@@ -253,8 +268,21 @@ struct ContentView: View {
                     label: "Mastered",
                     color: library.isMastered(currentWord) ? Color(red: 0.35, green: 0.85, blue: 0.55) : Color.appSecondary
                 ) {
+                    let wasAlreadyMastered = library.isMastered(currentWord)
                     library.toggleMastered(currentWord)
                     clampOffset()
+                    if !wasAlreadyMastered {
+                        if let hit = milestoneManager.milestone(forNewCount: library.masteredIDs.count) {
+                            if hit.isBig {
+                                celebrationMilestone = hit
+                            } else {
+                                toastMilestone = hit
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                                    toastMilestone = nil
+                                }
+                            }
+                        }
+                    }
                 }
                 actionButton(icon: "square.stack", label: "Collections") {
                     collectionsWord = currentWord
