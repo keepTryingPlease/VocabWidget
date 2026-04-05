@@ -24,9 +24,11 @@ class PronunciationService {
     // Cached audio URLs keyed by lowercase word.
     private var urlCache: [String: URL] = [:]
     private var player: AVPlayer?
+    // Retained so TTS speech completes before the synthesizer is deallocated.
+    private let synthesizer = AVSpeechSynthesizer()
 
     // Fetch the audio URL for a word (from cache or API), then play it.
-    // Fails silently if the word isn't in the API or the device is offline.
+    // Falls back to iOS text-to-speech if no audio is found or network fails.
     func speak(_ word: String) async {
         let key = word.lowercased()
         do {
@@ -34,7 +36,11 @@ class PronunciationService {
             if let cached = urlCache[key] {
                 audioURL = cached
             } else {
-                guard let fetched = try await fetchAudioURL(for: key) else { return }
+                guard let fetched = try await fetchAudioURL(for: key) else {
+                    // No human recording available — use TTS fallback.
+                    speakWithTTS(word)
+                    return
+                }
                 urlCache[key] = fetched
                 audioURL = fetched
             }
@@ -44,8 +50,18 @@ class PronunciationService {
             player = AVPlayer(url: audioURL)
             player?.play()
         } catch {
-            // Network error or word not found — do nothing.
+            // Network error — fall back to TTS so the button always does something.
+            speakWithTTS(word)
         }
+    }
+
+    private func speakWithTTS(_ word: String) {
+        let utterance = AVSpeechUtterance(string: word)
+        // en-GB gives a clear, neutral accent well-suited to vocabulary learning.
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-GB")
+        // Slightly slower than the default so each syllable is clear.
+        utterance.rate  = AVSpeechUtteranceDefaultSpeechRate * 0.85
+        synthesizer.speak(utterance)
     }
 
     private func fetchAudioURL(for word: String) async throws -> URL? {
