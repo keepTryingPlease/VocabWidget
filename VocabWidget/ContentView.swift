@@ -163,7 +163,7 @@ struct ContentView: View {
                 LibraryView(library: library)
             }
             .sheet(item: $collectionsWord) { word in
-                CollectionsPickerView(word: word, library: library)
+                LibraryView(library: library, initialTab: .collections, targetWord: word)
             }
             .sheet(item: $celebrationMilestone) { milestone in
                 MilestoneCelebrationView(milestone: milestone)
