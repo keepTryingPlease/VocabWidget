@@ -4,6 +4,7 @@
 // (across all levels). Each milestone only ever fires once.
 
 import Foundation
+import Combine
 
 // ── Milestone model ───────────────────────────────────────────────────────────
 
