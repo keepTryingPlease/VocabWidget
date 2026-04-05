@@ -1,27 +1,13 @@
 // ContentView.swift
 // The main screen of the app.
 //
-// LEARNING NOTES:
-// - Instagram Reels-style full-screen paging: the entire screen — level pill,
-//   word content, pronunciation button, word bank button — moves as one unit.
-//   The adjacent screen is offset by exactly one screen-height, so it sits just
-//   out of view until the drag pulls it in.
-// - GeometryReader wraps the outer ZStack to capture the true screen height.
-//   This height is used both to position adjacent pages and to animate the
-//   fly-out on swipe completion.
-// - .clipped() on the ZStack clips anything that strays outside the screen
-//   bounds, giving the illusion of a clean vertical pager.
-// - Background pages get .allowsHitTesting(false) so only the foreground page's
-//   buttons are tappable.
-// - Rubberband resistance (raw * 0.15) gives tactile feedback when the user
-//   tries to swipe back from the very first word in the deck.
-// - For the level-switch animation, all state changes are batched in a single
-//   Transaction with no animation, so the new screen appears off-screen instantly
-//   before the spring animation slides it in — eliminating any flash.
+// Paging is driven by a native ScrollView with .scrollTargetBehavior(.paging)
+// backed by UIKit's hardware-accelerated scroll layer, giving full 120 Hz
+// throughput. The previous hand-rolled DragGesture approach forced a full
+// SwiftUI layout pass on every finger-movement event, causing frame drops.
 
 import SwiftUI
 
-// App-wide colour palette
 private extension Color {
     static let appBackground = Color(red: 0.14, green: 0.14, blue: 0.15)
     static let appPrimary    = Color(red: 0.94, green: 0.93, blue: 0.90)
@@ -31,37 +17,22 @@ private extension Color {
 struct ContentView: View {
 
     let allWords = VocabularyStore.words
-    @StateObject private var library           = UserLibrary()
-    @StateObject private var scheduler         = DeckScheduler()
-    @StateObject private var milestoneManager  = MilestoneManager()
+    @StateObject private var library          = UserLibrary()
+    @StateObject private var scheduler        = DeckScheduler()
+    @StateObject private var milestoneManager = MilestoneManager()
 
     @State private var celebrationMilestone: Milestone? = nil
     @State private var showingMilestones    = false
+    @State private var selectedWord:        VocabularyWord? = nil
+    @State private var infoWord:            VocabularyWord? = nil
+    @State private var collectionsWord:     VocabularyWord? = nil
+    @State private var showingLibrary       = false
+    @State private var selectedLevel:       String = "beginner"
+    @State private var currentWordID:       Int?   = nil
+    @State private var fetchingAudioForID:  Int?   = nil
+    /// ID of the word currently playing the inhale-to-mastered animation.
+    @State private var masteringWordID:     Int?   = nil
 
-    @State private var selectedWord:       VocabularyWord? = nil
-    @State private var infoWord:           VocabularyWord? = nil
-    @State private var collectionsWord:    VocabularyWord? = nil
-    @State private var showingLibrary    = false
-
-    // Active vocabulary level. Changing it resets the deck to position 0.
-    @State private var selectedLevel: String = "beginner"
-
-    // Position in the current level's deck. 0 = first card, -1 = second, etc.
-    @State private var dayOffset = 0
-
-    // How far the user has dragged. Drives real-time screen movement.
-    @State private var dragOffset: CGFloat = 0
-    // Used only for the level-switch entry animation (separate from drag).
-    @State private var entryOffset: CGFloat = 0
-    // Full screen height — captured from GeometryReader, used to position pages.
-    @State private var screenHeight: CGFloat = 852
-    @State private var isFetchingAudio = false
-
-    // Swipe must exceed this distance (or predicted velocity equivalent) to complete.
-    private let swipeThreshold: CGFloat = 100
-
-    // Today's batch of 50 words for the active level, mastered words excluded.
-    // Recomputes whenever the scheduler advances or masteredIDs changes.
     private var filteredWords: [VocabularyWord] {
         let batchIDs = Set(scheduler.todaysBatch(for: selectedLevel))
         return VocabularyStore.words.filter {
@@ -71,29 +42,10 @@ struct ContentView: View {
         }
     }
 
-    // True when the level still has unmastered words outside today's batch.
-    // Used to distinguish "today's 50 are done" from "all words mastered".
     private var hasUnmasteredWordsInLevel: Bool {
         VocabularyStore.words.contains {
             $0.level == selectedLevel && !library.masteredIDs.contains($0.id)
         }
-    }
-
-    // Returns the word at a given deck offset within the active level.
-    private func word(forOffset offset: Int) -> VocabularyWord {
-        guard !filteredWords.isEmpty else { return VocabularyStore.words[0] }
-        let count = filteredWords.count
-        let index = (((-offset) % count) + count) % count
-        return filteredWords[index]
-    }
-
-    // Clamp dayOffset so it stays within the current deck size.
-    // Called after mastering a word shrinks the deck.
-    private func clampOffset() {
-        guard !filteredWords.isEmpty else { dayOffset = 0; return }
-        let count = filteredWords.count
-        dayOffset = ((dayOffset % count) - count) % count  // keep negative or zero
-        if dayOffset < -(count - 1) { dayOffset = 0 }
     }
 
     private var levelDisplayName: String {
@@ -107,67 +59,54 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            GeometryReader { screen in
-                ZStack {
+            ZStack {
+                Color.appBackground.ignoresSafeArea()
 
-                    // Page above — visible when swiping down (going back).
-                    if dragOffset > 2 && dayOffset < 0 {
-                        screenContent(for: dayOffset + 1)
-                            .offset(y: -screen.size.height + dragOffset)
-                            .allowsHitTesting(false)
-                    }
-
-                    // Page below — visible when swiping up (going forward).
-                    if dragOffset < -2 {
-                        screenContent(for: dayOffset - 1)
-                            .offset(y: screen.size.height + dragOffset)
-                            .allowsHitTesting(false)
-                    }
-
-                    // Foreground page — follows the finger and any entry animation.
-                    screenContent(for: dayOffset)
-                        .offset(y: dragOffset + entryOffset)
-                }
-                .clipped()
-                .gesture(
-                    DragGesture()
-                        .onChanged { value in
-                            let raw = value.translation.height
-                            // Rubberband resistance when trying to go back past the first page.
-                            dragOffset = (raw > 0 && dayOffset >= 0) ? raw * 0.15 : raw
+                if filteredWords.isEmpty {
+                    emptyStateView()
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView(.vertical) {
+                            LazyVStack(spacing: 0) {
+                                ForEach(filteredWords) { word in
+                                    wordPage(for: word, proxy: proxy)
+                                        .containerRelativeFrame([.horizontal, .vertical])
+                                        .id(word.id)
+                                }
+                            }
+                            .scrollTargetLayout()
                         }
-                        .onEnded { value in
-                            handleSwipeEnd(value, height: screen.size.height)
+                        .scrollTargetBehavior(.paging)
+                        .scrollIndicators(.hidden)
+                        .scrollPosition(id: $currentWordID)
+                        .ignoresSafeArea()
+                        .onChange(of: selectedLevel) { _, _ in
+                            if let first = filteredWords.first {
+                                proxy.scrollTo(first.id, anchor: .top)
+                                currentWordID = first.id
+                            }
                         }
-                )
-                .onAppear {
-                    screenHeight = screen.size.height
-                    scheduler.advanceIfNeeded(for: selectedLevel, masteredIDs: library.masteredIDs)
+                    }
                 }
-                .onChange(of: screen.size) { _, new in screenHeight = new.height }
             }
             .ignoresSafeArea()
-            .background(Color.appBackground)
             .navigationBarHidden(true)
-            .onChange(of: dayOffset) { _, _ in isFetchingAudio = false }
+            .onAppear {
+                scheduler.advanceIfNeeded(for: selectedLevel, masteredIDs: library.masteredIDs)
+                if currentWordID == nil { currentWordID = filteredWords.first?.id }
+            }
             .onChange(of: selectedLevel) { _, level in
                 scheduler.advanceIfNeeded(for: level, masteredIDs: library.masteredIDs)
+                fetchingAudioForID = nil
             }
-            .sheet(item: $selectedWord) { word in
-                WordDetailView(word: word)
+            .onChange(of: currentWordID) { _, _ in fetchingAudioForID = nil }
+            .sheet(item: $selectedWord)        { WordDetailView(word: $0) }
+            .sheet(item: $infoWord)            { WordInfoView(word: $0) }
+            .sheet(isPresented: $showingLibrary) { LibraryView(library: library) }
+            .sheet(item: $collectionsWord) {
+                LibraryView(library: library, initialTab: .collections, targetWord: $0)
             }
-            .sheet(item: $infoWord) { word in
-                WordInfoView(word: word)
-            }
-            .sheet(isPresented: $showingLibrary) {
-                LibraryView(library: library)
-            }
-            .sheet(item: $collectionsWord) { word in
-                LibraryView(library: library, initialTab: .collections, targetWord: word)
-            }
-            .sheet(item: $celebrationMilestone) { milestone in
-                MilestoneCelebrationView(milestone: milestone)
-            }
+            .sheet(item: $celebrationMilestone) { MilestoneCelebrationView(milestone: $0) }
             .sheet(isPresented: $showingMilestones) {
                 MilestoneProgressView(milestoneManager: milestoneManager, library: library)
             }
@@ -184,7 +123,8 @@ struct ContentView: View {
                     .padding(.vertical, 7)
                     .background(Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.12))
                     .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.25), lineWidth: 0.5))
+                    .overlay(Capsule().strokeBorder(
+                        Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.25), lineWidth: 0.5))
                 }
                 .padding(.top, 56)
                 .padding(.leading, 24)
@@ -200,97 +140,169 @@ struct ContentView: View {
         }
     }
 
-    // ── Full-screen page ──────────────────────────────────────────────────────
-    // Every swipeable page is the entire screen: level pill, word, pronunciation
-    // button, and action buttons all move together as one unit.
+    // ── Empty state ───────────────────────────────────────────────────────────
     @ViewBuilder
-    private func screenContent(for offset: Int) -> some View {
+    private func emptyStateView() -> some View {
         VStack(spacing: 0) {
-
             Spacer()
+            levelPill().padding(.bottom, 24)
 
-            // ── Level selector pill ───────────────────────────────────
-            Menu {
-                Button { switchLevel(to: "beginner") } label: {
-                    Label("Beginner",     systemImage: selectedLevel == "beginner"     ? "checkmark" : "")
-                }
-                Button { switchLevel(to: "intermediate") } label: {
-                    Label("Intermediate", systemImage: selectedLevel == "intermediate" ? "checkmark" : "")
-                }
-                Button { switchLevel(to: "advanced") } label: {
-                    Label("Advanced",     systemImage: selectedLevel == "advanced"     ? "checkmark" : "")
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(levelDisplayName)
-                        .font(.custom("Inter_18pt-Regular", size: 13))
+            if hasUnmasteredWordsInLevel {
+                VStack(spacing: 16) {
+                    Image(systemName: "sun.max")
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
+                    Text("That's today's batch!")
+                        .font(.custom("PlayfairDisplay-Bold", size: 32))
                         .foregroundStyle(Color.appPrimary)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 10, weight: .medium))
+                    Text("You've seen all 50 \(levelDisplayName.lowercased()) words for today.\nCome back tomorrow for the next batch.")
+                        .font(.custom("Inter_18pt-Regular", size: 16))
                         .foregroundStyle(Color.appSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 9)
-                .background(Color.appPrimary.opacity(0.07))
-                .clipShape(Capsule())
-                .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.35), lineWidth: 1))
-            }
-            .padding(.bottom, 24)
-
-            // ── Word content ──────────────────────────────────────────
-            wordContent(for: offset)
-
-            // ── Pronunciation button ──────────────────────────────────
-            Button {
-                Task {
-                    isFetchingAudio = true
-                    await PronunciationService.shared.speak(word(forOffset: dayOffset).word)
-                    isFetchingAudio = false
-                }
-            } label: {
-                if isFetchingAudio {
-                    ProgressView()
-                        .tint(Color.appSecondary)
-                        .frame(width: 44, height: 44)
-                } else {
-                    Image(systemName: "speaker.wave.2")
-                        .font(.title2)
+            } else {
+                VStack(spacing: 16) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
+                    Text("Level Complete")
+                        .font(.custom("PlayfairDisplay-Bold", size: 32))
+                        .foregroundStyle(Color.appPrimary)
+                    Text("You've mastered every \(levelDisplayName.lowercased()) word.\nSwitch levels or revisit words in your Library.")
+                        .font(.custom("Inter_18pt-Regular", size: 16))
                         .foregroundStyle(Color.appSecondary)
-                        .frame(width: 44, height: 44)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
                 }
             }
-            .padding(.top, 16)
-
             Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 
-            // ── Action buttons ────────────────────────────────────────
-            let currentWord = word(forOffset: dayOffset)
-            HStack(spacing: 0) {
-                actionButton(icon: "info.circle", label: "Info") {
-                    infoWord = currentWord
-                }
-                actionButton(
-                    icon:  library.isLiked(currentWord) ? "heart.fill" : "heart",
-                    label: "Like",
-                    color: library.isLiked(currentWord) ? Color(red: 0.95, green: 0.35, blue: 0.35) : Color.appSecondary
-                ) {
-                    library.toggleLike(currentWord)
-                }
-                actionButton(
-                    icon:  library.isMastered(currentWord) ? "checkmark.seal.fill" : "checkmark.seal",
-                    label: "Mastered",
-                    color: library.isMastered(currentWord) ? Color(red: 0.35, green: 0.85, blue: 0.55) : Color.appSecondary
-                ) {
-                    let wasAlreadyMastered = library.isMastered(currentWord)
-                    library.toggleMastered(currentWord)
-                    clampOffset()
-                    if !wasAlreadyMastered,
-                       let hit = milestoneManager.milestone(forNewCount: library.masteredIDs.count) {
-                        celebrationMilestone = hit
+    // ── Word page ─────────────────────────────────────────────────────────────
+    // The page is split into two layers in a ZStack:
+    //   1. Card content  — animates (inhale) when mastered
+    //   2. Action bar    — stays fixed so the mastered button is visible during the animation
+    @ViewBuilder
+    private func wordPage(for word: VocabularyWord, proxy: ScrollViewProxy) -> some View {
+        let isMastering = masteringWordID == word.id
+        let mastered    = library.isMastered(word)
+
+        ZStack(alignment: .bottom) {
+
+            // ── Card content (animated on master) ────────────────────────
+            VStack(spacing: 0) {
+                Spacer()
+                levelPill().padding(.bottom, 24)
+
+                VStack(spacing: 16) {
+                    Text(word.word)
+                        .font(.custom("PlayfairDisplay-Bold", size: 36))
+                        .foregroundStyle(Color.appPrimary)
+                        .multilineTextAlignment(.center)
+
+                    Divider()
+                        .overlay(Color.appSecondary.opacity(0.4))
+                        .padding(.horizontal, 40)
+
+                    Text(word.definition)
+                        .font(.custom("Inter_18pt-Regular", size: 17))
+                        .foregroundStyle(Color.appPrimary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+
+                    if let example = word.examples.first {
+                        Text("\u{201C}\(example)\u{201D}")
+                            .font(.custom("Inter_18pt-Regular", size: 15))
+                            .italic()
+                            .foregroundStyle(Color.appSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
                     }
                 }
+
+                Button {
+                    Task {
+                        fetchingAudioForID = word.id
+                        await PronunciationService.shared.speak(word.word)
+                        fetchingAudioForID = nil
+                    }
+                } label: {
+                    if fetchingAudioForID == word.id {
+                        ProgressView()
+                            .tint(Color.appSecondary)
+                            .frame(width: 44, height: 44)
+                    } else {
+                        Image(systemName: "speaker.wave.2")
+                            .font(.title2)
+                            .foregroundStyle(Color.appSecondary)
+                            .frame(width: 44, height: 44)
+                    }
+                }
+                .padding(.top, 16)
+
+                Spacer()
+                // Spacer matching the action bar height so content is vertically centred.
+                Color.clear.frame(height: 88)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // ── Inhale animation ──────────────────────────────────────────
+            // Shrinks toward the action bar (anchor y=1) with easeIn so it
+            // accelerates, feeling "pulled in" rather than just fading away.
+            .scaleEffect(
+                isMastering ? 0.05 : 1.0,
+                anchor: UnitPoint(x: 0.5, y: 0.92)
+            )
+            .opacity(isMastering ? 0.0 : 1.0)
+            .animation(.easeIn(duration: 0.30), value: isMastering)
+
+            // ── Action bar (not animated, always visible) ─────────────────
+            HStack(spacing: 0) {
+                actionButton(icon: "info.circle", label: "Info") {
+                    infoWord = word
+                }
+                actionButton(
+                    icon:  library.isLiked(word) ? "heart.fill" : "heart",
+                    label: "Like",
+                    color: library.isLiked(word)
+                        ? Color(red: 0.95, green: 0.35, blue: 0.35) : Color.appSecondary
+                ) {
+                    library.toggleLike(word)
+                }
+
+                // ── Mastered button — inline so the icon can spring-pulse ──
+                Button { masteredAction(for: word, proxy: proxy) } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: mastered ? "checkmark.seal.fill" : "checkmark.seal")
+                            .font(.system(size: 19))
+                            .foregroundStyle(
+                                isMastering || mastered
+                                    ? Color(red: 0.35, green: 0.85, blue: 0.55)
+                                    : Color.appSecondary
+                            )
+                            // Spring-pulse when the inhale starts
+                            .scaleEffect(isMastering ? 1.45 : 1.0)
+                            .animation(
+                                .spring(response: 0.22, dampingFraction: 0.4).delay(0.06),
+                                value: isMastering
+                            )
+                        Text("Mastered")
+                            .font(.custom("Inter_18pt-Regular", size: 9))
+                            .foregroundStyle(
+                                isMastering || mastered
+                                    ? Color(red: 0.35, green: 0.85, blue: 0.55)
+                                    : Color.appSecondary
+                            )
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                }
+                .disabled(isMastering)
+
                 actionButton(icon: "square.stack", label: "Collections") {
-                    collectionsWord = currentWord
+                    collectionsWord = word
                 }
                 actionButton(icon: "list.bullet", label: "Library") {
                     showingLibrary = true
@@ -301,6 +313,67 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appBackground)
+    }
+
+    // ── Mastered action ───────────────────────────────────────────────────────
+    private func masteredAction(for word: VocabularyWord, proxy: ScrollViewProxy) {
+        if library.isMastered(word) {
+            // Un-mastering from the deck — no animation needed.
+            library.toggleMastered(word)
+            return
+        }
+
+        // Kick off the inhale animation on the card.
+        masteringWordID = word.id
+
+        // After the animation finishes (0.30 s) + small buffer:
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
+            // Advance to the next word so it's ready behind the vanished card.
+            if let idx = filteredWords.firstIndex(where: { $0.id == word.id }),
+               filteredWords.indices.contains(idx + 1) {
+                let nextID = filteredWords[idx + 1].id
+                proxy.scrollTo(nextID, anchor: .top)
+                currentWordID = nextID
+            }
+            // Remove from deck + reset animation state.
+            library.toggleMastered(word)
+            masteringWordID = nil
+
+            // Fire milestone if applicable.
+            if let hit = milestoneManager.milestone(forNewCount: library.masteredIDs.count) {
+                celebrationMilestone = hit
+            }
+        }
+    }
+
+    // ── Level pill ────────────────────────────────────────────────────────────
+    @ViewBuilder
+    private func levelPill() -> some View {
+        Menu {
+            Button { selectedLevel = "beginner"     } label: {
+                Label("Beginner",     systemImage: selectedLevel == "beginner"     ? "checkmark" : "")
+            }
+            Button { selectedLevel = "intermediate" } label: {
+                Label("Intermediate", systemImage: selectedLevel == "intermediate" ? "checkmark" : "")
+            }
+            Button { selectedLevel = "advanced"     } label: {
+                Label("Advanced",     systemImage: selectedLevel == "advanced"     ? "checkmark" : "")
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(levelDisplayName)
+                    .font(.custom("Inter_18pt-Regular", size: 13))
+                    .foregroundStyle(Color.appPrimary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.appSecondary)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 9)
+            .background(Color.appPrimary.opacity(0.07))
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.35), lineWidth: 1))
+        }
     }
 
     // ── Action button ─────────────────────────────────────────────────────────
@@ -322,116 +395,6 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
-        }
-    }
-
-    // ── Word content ──────────────────────────────────────────────────────────
-    @ViewBuilder
-    private func wordContent(for offset: Int) -> some View {
-        if filteredWords.isEmpty {
-            if hasUnmasteredWordsInLevel {
-                // Today's 50 are done but unmastered words remain in future batches.
-                VStack(spacing: 16) {
-                    Image(systemName: "sun.max")
-                        .font(.system(size: 48, weight: .light))
-                        .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
-                    Text("That's today's batch!")
-                        .font(.custom("PlayfairDisplay-Bold", size: 32))
-                        .foregroundStyle(Color.appPrimary)
-                    Text("You've seen all 50 \(levelDisplayName.lowercased()) words for today.\nCome back tomorrow for the next batch.")
-                        .font(.custom("Inter_18pt-Regular", size: 16))
-                        .foregroundStyle(Color.appSecondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                }
-            } else {
-                // Every word in this level has been mastered.
-                VStack(spacing: 16) {
-                    Image(systemName: "checkmark.seal.fill")
-                        .font(.system(size: 48, weight: .light))
-                        .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
-                    Text("Level Complete")
-                        .font(.custom("PlayfairDisplay-Bold", size: 32))
-                        .foregroundStyle(Color.appPrimary)
-                    Text("You've mastered every \(levelDisplayName.lowercased()) word.\nSwitch levels or revisit words in your Library.")
-                        .font(.custom("Inter_18pt-Regular", size: 16))
-                        .foregroundStyle(Color.appSecondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                }
-            }
-        } else {
-            let word = word(forOffset: offset)
-            VStack(spacing: 16) {
-                Text(word.word)
-                    .font(.custom("PlayfairDisplay-Bold", size: 36))
-                    .foregroundStyle(Color.appPrimary)
-                    .multilineTextAlignment(.center)
-
-                Divider()
-                    .overlay(Color.appSecondary.opacity(0.4))
-                    .padding(.horizontal, 40)
-
-                Text(word.definition)
-                    .font(.custom("Inter_18pt-Regular", size: 17))
-                    .foregroundStyle(Color.appPrimary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 24)
-
-                if let example = word.examples.first {
-                    Text("\u{201C}\(example)\u{201D}")
-                        .font(.custom("Inter_18pt-Regular", size: 15))
-                        .italic()
-                        .foregroundStyle(Color.appSecondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                }
-            }
-        }
-    }
-
-    // ── Swipe logic ───────────────────────────────────────────────────────────
-    private func handleSwipeEnd(_ value: DragGesture.Value, height: CGFloat) {
-        let distance  = value.translation.height
-        let predicted = value.predictedEndTranslation.height
-        let goingUp   = distance < 0          // swipe up = advance to next word
-        let canSwipe  = goingUp || dayOffset < 0
-
-        // Complete if drag exceeded threshold OR flick velocity would carry it far enough.
-        let shouldComplete = canSwipe &&
-            (abs(distance) > swipeThreshold || abs(predicted) > swipeThreshold * 2)
-
-        if shouldComplete {
-            // Fly the page off screen, then update state once it's gone.
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.92)) {
-                dragOffset = goingUp ? -height : height
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
-                dayOffset += goingUp ? -1 : 1
-                dragOffset = 0
-            }
-        } else {
-            // Not far enough — snap back with a bouncy spring.
-            withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) {
-                dragOffset = 0
-            }
-        }
-    }
-
-    // ── Level switch ──────────────────────────────────────────────────────────
-    // Batch all state changes atomically (no animation) so the new screen appears
-    // off-screen instantly, then animate it sliding in from below.
-    private func switchLevel(to level: String) {
-        guard level != selectedLevel else { return }
-        isFetchingAudio = false
-        let t = Transaction(animation: nil)
-        withTransaction(t) {
-            selectedLevel = level
-            dayOffset     = 0
-            entryOffset   = screenHeight
-        }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) {
-            entryOffset = 0
         }
     }
 }
