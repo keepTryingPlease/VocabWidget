@@ -31,7 +31,8 @@ private extension Color {
 struct ContentView: View {
 
     let allWords = VocabularyStore.words
-    @StateObject private var library = UserLibrary()
+    @StateObject private var library   = UserLibrary()
+    @StateObject private var scheduler = DeckScheduler()
 
     @State private var selectedWord:       VocabularyWord? = nil
     @State private var infoWord:           VocabularyWord? = nil
@@ -55,10 +56,21 @@ struct ContentView: View {
     // Swipe must exceed this distance (or predicted velocity equivalent) to complete.
     private let swipeThreshold: CGFloat = 100
 
-    // Words for the active level, mastered words excluded.
-    // Recomputes automatically whenever library.masteredIDs changes.
+    // Today's batch of 50 words for the active level, mastered words excluded.
+    // Recomputes whenever the scheduler advances or masteredIDs changes.
     private var filteredWords: [VocabularyWord] {
-        VocabularyStore.words.filter {
+        let batchIDs = Set(scheduler.todaysBatch(for: selectedLevel))
+        return VocabularyStore.words.filter {
+            $0.level == selectedLevel
+            && batchIDs.contains($0.id)
+            && !library.masteredIDs.contains($0.id)
+        }
+    }
+
+    // True when the level still has unmastered words outside today's batch.
+    // Used to distinguish "today's 50 are done" from "all words mastered".
+    private var hasUnmasteredWordsInLevel: Bool {
+        VocabularyStore.words.contains {
             $0.level == selectedLevel && !library.masteredIDs.contains($0.id)
         }
     }
@@ -124,13 +136,19 @@ struct ContentView: View {
                             handleSwipeEnd(value, height: screen.size.height)
                         }
                 )
-                .onAppear { screenHeight = screen.size.height }
+                .onAppear {
+                    screenHeight = screen.size.height
+                    scheduler.advanceIfNeeded(for: selectedLevel, masteredIDs: library.masteredIDs)
+                }
                 .onChange(of: screen.size) { _, new in screenHeight = new.height }
             }
             .ignoresSafeArea()
             .background(Color.appBackground)
             .navigationBarHidden(true)
             .onChange(of: dayOffset) { _, _ in isFetchingAudio = false }
+            .onChange(of: selectedLevel) { _, level in
+                scheduler.advanceIfNeeded(for: level, masteredIDs: library.masteredIDs)
+            }
             .sheet(item: $selectedWord) { word in
                 WordDetailView(word: word)
             }
@@ -278,19 +296,36 @@ struct ContentView: View {
     @ViewBuilder
     private func wordContent(for offset: Int) -> some View {
         if filteredWords.isEmpty {
-            // All words in this level have been mastered.
-            VStack(spacing: 16) {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 48, weight: .light))
-                    .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
-                Text("Level Complete")
-                    .font(.custom("PlayfairDisplay-Bold", size: 32))
-                    .foregroundStyle(Color.appPrimary)
-                Text("You've mastered every \(levelDisplayName.lowercased()) word.\nSwitch levels or revisit words in your Library.")
-                    .font(.custom("Inter_18pt-Regular", size: 16))
-                    .foregroundStyle(Color.appSecondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
+            if hasUnmasteredWordsInLevel {
+                // Today's 50 are done but unmastered words remain in future batches.
+                VStack(spacing: 16) {
+                    Image(systemName: "sun.max")
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
+                    Text("That's today's batch!")
+                        .font(.custom("PlayfairDisplay-Bold", size: 32))
+                        .foregroundStyle(Color.appPrimary)
+                    Text("You've seen all 50 \(levelDisplayName.lowercased()) words for today.\nCome back tomorrow for the next batch.")
+                        .font(.custom("Inter_18pt-Regular", size: 16))
+                        .foregroundStyle(Color.appSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                }
+            } else {
+                // Every word in this level has been mastered.
+                VStack(spacing: 16) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
+                    Text("Level Complete")
+                        .font(.custom("PlayfairDisplay-Bold", size: 32))
+                        .foregroundStyle(Color.appPrimary)
+                    Text("You've mastered every \(levelDisplayName.lowercased()) word.\nSwitch levels or revisit words in your Library.")
+                        .font(.custom("Inter_18pt-Regular", size: 16))
+                        .foregroundStyle(Color.appSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                }
             }
         } else {
             let word = word(forOffset: offset)
