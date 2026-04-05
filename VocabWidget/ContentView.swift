@@ -55,9 +55,12 @@ struct ContentView: View {
     // Swipe must exceed this distance (or predicted velocity equivalent) to complete.
     private let swipeThreshold: CGFloat = 100
 
-    // Words filtered to the active level, in their shuffled deck order.
+    // Words for the active level, mastered words excluded.
+    // Recomputes automatically whenever library.masteredIDs changes.
     private var filteredWords: [VocabularyWord] {
-        VocabularyStore.words.filter { $0.level == selectedLevel }
+        VocabularyStore.words.filter {
+            $0.level == selectedLevel && !library.masteredIDs.contains($0.id)
+        }
     }
 
     // Returns the word at a given deck offset within the active level.
@@ -66,6 +69,15 @@ struct ContentView: View {
         let count = filteredWords.count
         let index = (((-offset) % count) + count) % count
         return filteredWords[index]
+    }
+
+    // Clamp dayOffset so it stays within the current deck size.
+    // Called after mastering a word shrinks the deck.
+    private func clampOffset() {
+        guard !filteredWords.isEmpty else { dayOffset = 0; return }
+        let count = filteredWords.count
+        dayOffset = ((dayOffset % count) - count) % count  // keep negative or zero
+        if dayOffset < -(count - 1) { dayOffset = 0 }
     }
 
     private var levelDisplayName: String {
@@ -224,6 +236,7 @@ struct ContentView: View {
                     color: library.isMastered(currentWord) ? Color(red: 0.35, green: 0.85, blue: 0.55) : Color.appSecondary
                 ) {
                     library.toggleMastered(currentWord)
+                    clampOffset()
                 }
                 actionButton(icon: "square.stack", label: "Collections") {
                     collectionsWord = currentWord
@@ -264,30 +277,47 @@ struct ContentView: View {
     // ── Word content ──────────────────────────────────────────────────────────
     @ViewBuilder
     private func wordContent(for offset: Int) -> some View {
-        let word = word(forOffset: offset)
-        VStack(spacing: 16) {
-            Text(word.word)
-                .font(.custom("PlayfairDisplay-Bold", size: 36))
-                .foregroundStyle(Color.appPrimary)
-                .multilineTextAlignment(.center)
-
-            Divider()
-                .overlay(Color.appSecondary.opacity(0.4))
-                .padding(.horizontal, 40)
-
-            Text(word.definition)
-                .font(.custom("Inter_18pt-Regular", size: 17))
-                .foregroundStyle(Color.appPrimary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-
-            if let example = word.examples.first {
-                Text("\u{201C}\(example)\u{201D}")
-                    .font(.custom("Inter_18pt-Regular", size: 15))
-                    .italic()
+        if filteredWords.isEmpty {
+            // All words in this level have been mastered.
+            VStack(spacing: 16) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 48, weight: .light))
+                    .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
+                Text("Level Complete")
+                    .font(.custom("PlayfairDisplay-Bold", size: 32))
+                    .foregroundStyle(Color.appPrimary)
+                Text("You've mastered every \(levelDisplayName.lowercased()) word.\nSwitch levels or revisit words in your Library.")
+                    .font(.custom("Inter_18pt-Regular", size: 16))
                     .foregroundStyle(Color.appSecondary)
                     .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            }
+        } else {
+            let word = word(forOffset: offset)
+            VStack(spacing: 16) {
+                Text(word.word)
+                    .font(.custom("PlayfairDisplay-Bold", size: 36))
+                    .foregroundStyle(Color.appPrimary)
+                    .multilineTextAlignment(.center)
+
+                Divider()
+                    .overlay(Color.appSecondary.opacity(0.4))
+                    .padding(.horizontal, 40)
+
+                Text(word.definition)
+                    .font(.custom("Inter_18pt-Regular", size: 17))
+                    .foregroundStyle(Color.appPrimary)
+                    .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
+
+                if let example = word.examples.first {
+                    Text("\u{201C}\(example)\u{201D}")
+                        .font(.custom("Inter_18pt-Regular", size: 15))
+                        .italic()
+                        .foregroundStyle(Color.appSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
             }
         }
     }
