@@ -99,7 +99,10 @@ struct ContentView: View {
                 scheduler.advanceIfNeeded(for: level, masteredIDs: library.masteredIDs)
                 fetchingAudioForID = nil
             }
-            .onChange(of: currentWordID) { _, _ in fetchingAudioForID = nil }
+            .onChange(of: currentWordID) { _, _ in
+                fetchingAudioForID = nil
+                extendBatchIfNearEnd()
+            }
             .sheet(item: $selectedWord)        { WordDetailView(word: $0) }
             .sheet(item: $infoWord)            { WordInfoView(word: $0) }
             .sheet(isPresented: $showingLibrary) { LibraryView(library: library) }
@@ -148,18 +151,19 @@ struct ContentView: View {
             levelPill().padding(.bottom, 24)
 
             if hasUnmasteredWordsInLevel {
+                // This state is hit only if the last remaining words were all mastered
+                // simultaneously (e.g. rapid-fire mastering of the last card). In practice
+                // extendBatchIfNearEnd keeps loading more words before this is ever shown.
                 VStack(spacing: 16) {
-                    Image(systemName: "sun.max")
+                    Image(systemName: "arrow.clockwise")
                         .font(.system(size: 48, weight: .light))
                         .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
-                    Text("That's today's batch!")
+                    Text("Loading more…")
                         .font(.custom("PlayfairDisplay-Bold", size: 32))
                         .foregroundStyle(Color.appPrimary)
-                    Text("You've seen all 50 \(levelDisplayName.lowercased()) words for today.\nCome back tomorrow for the next batch.")
-                        .font(.custom("Inter_18pt-Regular", size: 16))
-                        .foregroundStyle(Color.appSecondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
+                }
+                .onAppear {
+                    scheduler.extendBatch(for: selectedLevel, masteredIDs: library.masteredIDs)
                 }
             } else {
                 VStack(spacing: 16) {
@@ -313,6 +317,19 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appBackground)
+    }
+
+    // ── Batch extension ───────────────────────────────────────────────────────
+    // Called whenever the current card changes. When the user is within 3 cards
+    // of the end of today's visible batch, silently extend it by another 50 so
+    // there's always something to scroll into — no empty-state wall.
+    private func extendBatchIfNearEnd() {
+        guard let currentID = currentWordID,
+              let idx = filteredWords.firstIndex(where: { $0.id == currentID }) else { return }
+        let distanceFromEnd = filteredWords.count - 1 - idx
+        if distanceFromEnd <= 2 {
+            scheduler.extendBatch(for: selectedLevel, masteredIDs: library.masteredIDs)
+        }
     }
 
     // ── Mastered action ───────────────────────────────────────────────────────
