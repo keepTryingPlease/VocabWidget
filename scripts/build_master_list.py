@@ -3,11 +3,9 @@
 build_master_list.py
 ────────────────────
 Builds a clean 1 500-word master list for VocabWidget — 500 words per
-difficulty level — by requesting random words directly from WordsAPI
-within each Zipf frequency range.  No candidate word list required.
-
-Every word ends up with a full data set so the app never needs to make
-a network call at runtime.
+difficulty level — by requesting random words from WordsAPI within each
+Zipf frequency range, then filling any missing fields (examples,
+synonyms, etymology) from the Free Dictionary API.
 
 Output schema (per word)
 ────────────────────────
@@ -26,32 +24,37 @@ How it works
 ────────────
   Phase 1 — Collect : Calls WordsAPI GET /words/?random=true with
                        frequencyMin / frequencyMax set for each level.
-                       Each successful call returns a word guaranteed to
-                       be in the right Zipf band.  Runs until 500 unique
-                       words with definitions are confirmed per level.
+                       Stops once 500 unique words with definitions are
+                       confirmed per level.
 
-  Phase 2 — Enrich  : Calls the Free Dictionary API (free, no key) for
-                       each word to get etymology (origin).  WordsAPI
-                       already provides definitions, examples, synonyms.
+  Phase 2 — Enrich  : For every collected word, calls the Free Dictionary
+                       API to fill any fields that WordsAPI left empty
+                       (examples, synonyms, etymology).  Both sources are
+                       merged so the final word always has the richest
+                       possible data.
 
-  Both phases cache to disk after every call so the script can be
-  interrupted and resumed safely.
+  Both phases write to disk after every single API call so the script
+  can be safely interrupted and resumed at any point.  Re-running
+  tomorrow after a rate-limit hit will only fetch what is still missing.
 
-Zipf level boundaries used
-──────────────────────────
-  beginner       4.5 – 5.5   heard it, don't use it confidently
-  intermediate   3.1 – 4.5   marks an educated vocabulary
-  advanced       1.9 – 3.1   literary / formal register
+Zipf level boundaries
+─────────────────────
+  beginner       4.5 – 5.5
+  intermediate   3.1 – 4.5
+  advanced       1.9 – 3.1
 
-API usage estimate (free tier = 2 500 requests / day)
-──────────────────────────────────────────────────────
-  ~550 WordsAPI calls per level (allows for ~10% duplicates / no-data)
-  ~1 650 WordsAPI calls total
-  ~1 500 Free Dictionary calls (unlimited, no key)
-  → Completes in a single day well within the free quota.
+WordsAPI daily quota (free tier = 2 500 requests / day)
+────────────────────────────────────────────────────────
+  The script tracks every request it makes this session and warns you
+  at 80 % (2 000) and 95 % (2 375) of the daily limit.  If it hits
+  the limit before finishing, it stops cleanly, prints a summary of
+  what is still outstanding, and resumes correctly on the next run.
+
+  Estimated usage:  ~1 650 WordsAPI calls  +  ~1 500 Free Dictionary
+  calls (unlimited).  Completes in a single day on the free tier.
 
 Prerequisites
-────────────────────────────────────────────────────
+─────────────
   Python 3.10+  (stdlib only — no pip installs needed)
   export WORDSAPI_KEY=your_key
 
@@ -60,7 +63,7 @@ Prerequisites
 Run from the project root (VocabWidget/VocabWidget/):
   python3 scripts/build_master_list.py
 
-When done, review the output and copy it into the app:
+When done, review and copy into the app:
   cp words_generated.json VocabWidget/words.json
 """
 
@@ -78,15 +81,17 @@ WORDSAPI_KEY  = os.environ.get("WORDSAPI_KEY", "")
 WORDSAPI_HOST = "wordsapiv1.p.rapidapi.com"
 
 CACHE_DIR        = pathlib.Path("scripts/cache")
-COLLECT_CACHE    = CACHE_DIR / "collected.json"   # words gathered per level
-ENRICHMENT_CACHE = CACHE_DIR / "enrichment.json"  # etymology from Free Dict
+COLLECT_CACHE    = CACHE_DIR / "collected.json"
+ENRICHMENT_CACHE = CACHE_DIR / "enrichment.json"
 OUTPUT_FILE      = pathlib.Path("words_generated.json")
 
-WORDS_PER_LEVEL = 500   # target per level
-MAX_EXAMPLES    = 2
-MAX_SYNONYMS    = 8
+WORDS_PER_LEVEL      = 500
+MAX_EXAMPLES         = 2
+MAX_SYNONYMS         = 8
+DAILY_QUOTA          = 2500
+WARN_AT_80_PCT       = int(DAILY_QUOTA * 0.80)   # 2 000
+WARN_AT_95_PCT       = int(DAILY_QUOTA * 0.95)   # 2 375
 
-# Preferred parts of speech — we try to pick the most useful sense of a word
 PREFERRED_POS = ["adjective", "verb", "noun", "adverb"]
 
 LEVELS = {
@@ -95,8 +100,8 @@ LEVELS = {
     "advanced":     {"min": 1.9, "max": 3.1},
 }
 
-WORDSAPI_DELAY = 0.35   # seconds between WordsAPI calls
-FREEDICT_DELAY = 0.30   # seconds between Free Dictionary calls
+WORDSAPI_DELAY = 0.35
+FREEDICT_DELAY = 0.30
 
 # ── Validate environment ──────────────────────────────────────────────────────
 
@@ -110,20 +115,32 @@ if not WORDSAPI_KEY:
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-collected: dict    = json.loads(COLLECT_CACHE.read_text())    if COLLECT_CACHE.exists()    else {"beginner": {}, "intermediate": {}, "advanced": {}}
-enrichment: dict   = json.loads(ENRICHMENT_CACHE.read_text()) if ENRICHMENT_CACHE.exists() else {}
+collected:  dict = json.loads(COLLECT_CACHE.read_text())    if COLLECT_CACHE.exists()    else {}
+enrichment: dict = json.loads(ENRICHMENT_CACHE.read_text()) if ENRICHMENT_CACHE.exists() else {}
 
 for lvl in LEVELS:
     if lvl not in collected:
         collected[lvl] = {}
 
-# ── Phase 1: Collect random words per level from WordsAPI ─────────────────────
+# ── Request counter (tracks usage this session, not lifetime) ─────────────────
+
+wordsapi_calls = 0
+
+def _print_quota_warning():
+    if wordsapi_calls == WARN_AT_80_PCT:
+        print(f"\n⚠️   80 % of daily quota used ({wordsapi_calls}/{DAILY_QUOTA} calls).")
+    elif wordsapi_calls == WARN_AT_95_PCT:
+        print(f"\n🚨  95 % of daily quota used ({wordsapi_calls}/{DAILY_QUOTA} calls).")
+        print("    The script will stop at the limit and resume tomorrow.\n")
+
+# ── WordsAPI helper ───────────────────────────────────────────────────────────
 
 def fetch_random_word(freq_min: float, freq_max: float) -> dict | None:
     """
-    Calls GET /words/?random=true&frequencyMin=X&frequencyMax=Y
-    Returns parsed response dict, or None on any error / rate limit.
+    GET /words/?random=true&frequencyMin=X&frequencyMax=Y
+    Returns the parsed response body, "RATE_LIMITED", or None on error.
     """
+    global wordsapi_calls
     params = urllib.parse.urlencode({
         "random":       "true",
         "frequencyMin": freq_min,
@@ -133,8 +150,7 @@ def fetch_random_word(freq_min: float, freq_max: float) -> dict | None:
     conn = http.client.HTTPSConnection(WORDSAPI_HOST)
     try:
         conn.request(
-            "GET",
-            f"/words/?{params}",
+            "GET", f"/words/?{params}",
             headers={
                 "X-RapidAPI-Key":  WORDSAPI_KEY,
                 "X-RapidAPI-Host": WORDSAPI_HOST,
@@ -142,23 +158,21 @@ def fetch_random_word(freq_min: float, freq_max: float) -> dict | None:
         )
         res  = conn.getresponse()
         body = json.loads(res.read().decode("utf-8"))
+        wordsapi_calls += 1
+        _print_quota_warning()
 
         if res.status == 429:
-            print("\n⛔  Rate limit reached — stopping. Re-run tomorrow to continue.")
             return "RATE_LIMITED"
-
         if res.status != 200 or "word" not in body:
             return None
-
         return body
     except Exception as e:
-        print(f"  ⚠️  {e}")
+        print(f"  ⚠️  network error: {e}")
         return None
     finally:
         conn.close()
 
 def best_result(results: list) -> dict | None:
-    """Pick the most useful definition from a list of WordsAPI result objects."""
     if not results:
         return None
     for pos in PREFERRED_POS:
@@ -168,12 +182,8 @@ def best_result(results: list) -> dict | None:
     return results[0]
 
 def parse_word_entry(body: dict) -> dict | None:
-    """
-    Extract a clean word record from a WordsAPI response body.
-    Returns None if the word lacks a usable definition.
-    """
-    word  = (body.get("word") or "").strip()
-    if not word:
+    word = (body.get("word") or "").strip()
+    if not word or " " in word:   # skip phrases
         return None
 
     results = body.get("results") or []
@@ -187,10 +197,10 @@ def parse_word_entry(body: dict) -> dict | None:
 
     part_of_speech = chosen.get("partOfSpeech") or "unknown"
 
-    # Collect examples across all results (prefer chosen sense first)
+    # Collect examples (prefer chosen sense, then others)
     raw_examples: list[str] = []
     for r in [chosen] + [r for r in results if r is not chosen]:
-        for ex in r.get("examples") or []:
+        for ex in (r.get("examples") or []):
             ex = ex.strip()
             if ex and ex not in raw_examples:
                 raw_examples.append(ex)
@@ -199,102 +209,35 @@ def parse_word_entry(body: dict) -> dict | None:
         if len(raw_examples) >= MAX_EXAMPLES:
             break
 
-    # Collect synonyms across all results
+    # Collect synonyms across all results, deduplicated
+    seen_syn: set = set()
     raw_synonyms: list[str] = []
     for r in results:
-        for s in r.get("synonyms") or []:
+        for s in (r.get("synonyms") or []):
             s = s.strip()
-            if s and s.lower() not in {x.lower() for x in raw_synonyms}:
+            if s and s.lower() not in seen_syn:
+                seen_syn.add(s.lower())
                 raw_synonyms.append(s)
-
-    synonyms = raw_synonyms[:MAX_SYNONYMS]
 
     return {
         "word":         word,
         "partOfSpeech": part_of_speech,
         "definition":   definition,
         "examples":     raw_examples[:MAX_EXAMPLES],
-        "synonyms":     synonyms,
+        "synonyms":     raw_synonyms[:MAX_SYNONYMS],
     }
 
-print("── Phase 1: Collecting random words per level ───────────────────────")
-rate_limited = False
+# ── Free Dictionary helper ────────────────────────────────────────────────────
 
-for level, bounds in LEVELS.items():
-    already  = len(collected[level])
-    needed   = WORDS_PER_LEVEL - already
-    if needed <= 0:
-        print(f"  {level:<15} ✅  already have {already} words — skipping")
-        continue
+def fetch_free_dict(word: str) -> dict:
+    """
+    Calls the Free Dictionary API and returns a dict with:
+      examples  : list of up to MAX_EXAMPLES sentences
+      synonyms  : list of up to MAX_SYNONYMS synonyms
+      origin    : etymology string or None
 
-    print(f"\n  {level}  (need {needed} more, have {already})")
-
-    attempts = 0
-    while len(collected[level]) < WORDS_PER_LEVEL:
-        attempts += 1
-        result = fetch_random_word(bounds["min"], bounds["max"])
-
-        if result == "RATE_LIMITED":
-            rate_limited = True
-            break
-
-        if result is None:
-            print("    ↳ no result", flush=True)
-            time.sleep(WORDSAPI_DELAY)
-            continue
-
-        entry = parse_word_entry(result)
-        if entry is None:
-            print(f"    ↳ {result.get('word', '?'):<20} no usable definition", flush=True)
-            time.sleep(WORDSAPI_DELAY)
-            continue
-
-        key = entry["word"].lower()
-        if key in collected[level]:
-            print(f"    ↳ {entry['word']:<20} duplicate — skipping", flush=True)
-            time.sleep(WORDSAPI_DELAY)
-            continue
-
-        # Also skip if the word already appears in another level
-        already_in_other = any(
-            key in collected[other_level]
-            for other_level in LEVELS
-            if other_level != level
-        )
-        if already_in_other:
-            print(f"    ↳ {entry['word']:<20} already in another level — skipping", flush=True)
-            time.sleep(WORDSAPI_DELAY)
-            continue
-
-        collected[level][key] = entry
-        COLLECT_CACHE.write_text(json.dumps(collected, indent=2, ensure_ascii=False))
-
-        count = len(collected[level])
-        print(f"    [{count:>3}/{WORDS_PER_LEVEL}]  {entry['word']:<22} "
-              f"pos={entry['partOfSpeech']}", flush=True)
-        time.sleep(WORDSAPI_DELAY)
-
-    if rate_limited:
-        break
-
-if rate_limited:
-    total_so_far = sum(len(v) for v in collected.values())
-    print(f"\n  Saved {total_so_far} words so far.  Re-run tomorrow to continue.")
-    sys.exit(0)
-
-# ── Phase 2: Enrich with etymology from Free Dictionary ───────────────────────
-
-print("\n── Phase 2: Fetching etymology from Free Dictionary ─────────────────")
-
-all_words = [
-    (word_key, level)
-    for level, words in collected.items()
-    for word_key in words
-    if word_key not in enrichment
-]
-print(f"   {len(all_words)} words need etymology lookup\n")
-
-def fetch_origin(word: str) -> str | None:
+    Used to fill any fields that WordsAPI left empty.
+    """
     encoded = urllib.parse.quote(word.lower())
     conn = http.client.HTTPSConnection("api.dictionaryapi.dev")
     try:
@@ -302,69 +245,221 @@ def fetch_origin(word: str) -> str | None:
                      headers={"User-Agent": "VocabWidget/1.0"})
         res  = conn.getresponse()
         if res.status != 200:
-            return None
+            return {"examples": [], "synonyms": [], "origin": None}
+
         entries = json.loads(res.read().decode("utf-8"))
-        if not isinstance(entries, list):
-            return None
+        if not isinstance(entries, list) or not entries:
+            return {"examples": [], "synonyms": [], "origin": None}
+
+        raw_examples: list[str] = []
+        raw_synonyms: list[str] = []
+        origin: str | None      = None
+
         for entry in entries:
-            o = (entry.get("origin") or "").strip()
-            if o:
-                return o
-        return None
+            if origin is None:
+                o = (entry.get("origin") or "").strip()
+                if o:
+                    origin = o
+
+            for meaning in (entry.get("meanings") or []):
+                raw_synonyms.extend(meaning.get("synonyms") or [])
+                for defn in (meaning.get("definitions") or []):
+                    raw_synonyms.extend(defn.get("synonyms") or [])
+                    ex = (defn.get("example") or "").strip()
+                    if ex and ex not in raw_examples:
+                        raw_examples.append(ex)
+
+        # Deduplicate synonyms
+        seen: set = set()
+        deduped: list[str] = []
+        for s in raw_synonyms:
+            s = s.strip()
+            if s and s.lower() not in seen:
+                seen.add(s.lower())
+                deduped.append(s)
+
+        return {
+            "examples": raw_examples[:MAX_EXAMPLES],
+            "synonyms": deduped[:MAX_SYNONYMS],
+            "origin":   origin,
+        }
     except Exception:
-        return None
+        return {"examples": [], "synonyms": [], "origin": None}
     finally:
         conn.close()
 
-for i, (word_key, level) in enumerate(all_words):
-    print(f"  [{i+1:>4}/{len(all_words)}]  {word_key:<22}", end=" ", flush=True)
-    origin = fetch_origin(word_key)
-    enrichment[word_key] = origin
+def _stop_with_summary(reason: str):
+    """Print a clear summary of outstanding work and exit."""
+    print(f"\n{'─'*68}")
+    print(f"⛔  {reason}")
+    print(f"{'─'*68}")
+    total_collected = sum(len(v) for v in collected.values())
+    total_enriched  = len(enrichment)
+    print(f"\n  Progress saved:")
+    for lvl in LEVELS:
+        n = len(collected.get(lvl, {}))
+        bar = "█" * (n // 20) + f"  {n}/{WORDS_PER_LEVEL}"
+        print(f"    {lvl:<15} {bar}")
+    print(f"\n  Enriched so far : {total_enriched} / {total_collected} words")
+    print(f"  WordsAPI calls  : {wordsapi_calls} this session")
+    print(f"\n  Nothing was lost — re-run tomorrow to continue:")
+    print(f"    python3 scripts/build_master_list.py")
+    print(f"{'─'*68}\n")
+    sys.exit(0)
+
+# ── Phase 1: Collect random words per level ───────────────────────────────────
+
+print("── Phase 1: Collecting random words ────────────────────────────────")
+
+for level, bounds in LEVELS.items():
+    already = len(collected[level])
+    needed  = WORDS_PER_LEVEL - already
+    if needed <= 0:
+        print(f"  {level:<15} ✅  {already}/{WORDS_PER_LEVEL} — complete, skipping")
+        continue
+
+    print(f"\n  {level}  ({already} collected, need {needed} more)")
+
+    while len(collected[level]) < WORDS_PER_LEVEL:
+        if wordsapi_calls >= DAILY_QUOTA:
+            _stop_with_summary(f"Daily quota of {DAILY_QUOTA} requests reached.")
+
+        result = fetch_random_word(bounds["min"], bounds["max"])
+
+        if result == "RATE_LIMITED":
+            _stop_with_summary("WordsAPI returned 429 — daily quota exhausted.")
+
+        if result is None:
+            time.sleep(WORDSAPI_DELAY)
+            continue
+
+        entry = parse_word_entry(result)
+        if entry is None:
+            time.sleep(WORDSAPI_DELAY)
+            continue
+
+        key = entry["word"].lower()
+
+        # Skip duplicates across all levels
+        if any(key in collected[lvl] for lvl in LEVELS):
+            time.sleep(WORDSAPI_DELAY)
+            continue
+
+        collected[level][key] = entry
+        COLLECT_CACHE.write_text(json.dumps(collected, indent=2, ensure_ascii=False))
+
+        count    = len(collected[level])
+        has_ex   = "ex✓" if entry["examples"]  else "ex–"
+        has_syn  = "syn✓" if entry["synonyms"] else "syn–"
+        print(f"    [{count:>3}/{WORDS_PER_LEVEL}]  {entry['word']:<22} "
+              f"{entry['partOfSpeech']:<12} {has_ex}  {has_syn}")
+        time.sleep(WORDSAPI_DELAY)
+
+print(f"\n  ✅  Phase 1 complete  ({wordsapi_calls} WordsAPI calls this session)")
+
+# ── Phase 2: Enrich with Free Dictionary ──────────────────────────────────────
+
+print("\n── Phase 2: Enriching with Free Dictionary ──────────────────────────")
+print("   (fills missing examples, synonyms, and etymology)\n")
+
+all_words_flat = [
+    (word_key, level)
+    for level, words in collected.items()
+    for word_key in words
+]
+
+to_enrich = [(k, lvl) for k, lvl in all_words_flat if k not in enrichment]
+print(f"  {len(all_words_flat) - len(to_enrich)} already enriched — skipping")
+print(f"  {len(to_enrich)} words to process\n")
+
+for i, (word_key, _) in enumerate(to_enrich):
+    entry    = collected[_][word_key]
+    needs_ex  = len(entry.get("examples", [])) < MAX_EXAMPLES
+    needs_syn = len(entry.get("synonyms", [])) < MAX_SYNONYMS
+    # Always fetch for origin; also fetch if examples or synonyms are short.
+    # Free Dictionary is unlimited so there's no cost to calling it every time.
+
+    print(f"  [{i+1:>4}/{len(to_enrich)}]  {word_key:<22}", end=" ", flush=True)
+    fd = fetch_free_dict(word_key)
+    enrichment[word_key] = fd
     ENRICHMENT_CACHE.write_text(json.dumps(enrichment, indent=2, ensure_ascii=False))
-    print("✓" if origin else "–")
+
+    filled = []
+    if needs_ex  and fd["examples"]: filled.append("ex")
+    if needs_syn and fd["synonyms"]: filled.append("syn")
+    if fd["origin"]:                 filled.append("origin")
+    print("filled: " + ", ".join(filled) if filled else "no new data")
     time.sleep(FREEDICT_DELAY)
 
-# ── Phase 3: Assemble final word list ─────────────────────────────────────────
+print(f"\n  ✅  Phase 2 complete")
+
+# ── Phase 3: Merge and assemble final word list ───────────────────────────────
 
 print("\n── Phase 3: Assembling output ───────────────────────────────────────")
 
 output: list = []
-uid  = 0
-stats = {lvl: 0 for lvl in LEVELS}
+uid    = 0
+stats  = {lvl: {"total": 0, "full_ex": 0, "full_syn": 0, "has_origin": 0}
+          for lvl in LEVELS}
 
 for level in LEVELS:
     for word_key, entry in collected[level].items():
+        fd = enrichment.get(word_key, {"examples": [], "synonyms": [], "origin": None})
+
+        # ── Merge examples: WordsAPI first, Free Dictionary fills gaps ──────
+        final_examples = list(entry.get("examples") or [])
+        for ex in (fd.get("examples") or []):
+            if len(final_examples) >= MAX_EXAMPLES:
+                break
+            if ex.strip() and ex not in final_examples:
+                final_examples.append(ex.strip())
+
+        # ── Merge synonyms: combine both sources, deduplicated ──────────────
+        seen_syn: set = {s.lower() for s in (entry.get("synonyms") or [])}
+        final_synonyms = list(entry.get("synonyms") or [])
+        for s in (fd.get("synonyms") or []):
+            if len(final_synonyms) >= MAX_SYNONYMS:
+                break
+            if s.strip() and s.lower() not in seen_syn:
+                seen_syn.add(s.lower())
+                final_synonyms.append(s.strip())
+
+        origin = fd.get("origin")   # WordsAPI rarely carries etymology
+
+        s = stats[level]
+        s["total"] += 1
+        if len(final_examples) >= MAX_EXAMPLES: s["full_ex"]     += 1
+        if len(final_synonyms) >= 4:            s["full_syn"]    += 1
+        if origin:                              s["has_origin"]  += 1
+
         output.append({
             "id":           uid,
             "word":         entry["word"].capitalize(),
             "partOfSpeech": entry["partOfSpeech"],
             "definition":   entry["definition"],
-            "examples":     entry["examples"],
-            "synonyms":     entry["synonyms"],
-            "origin":       enrichment.get(word_key),
+            "examples":     final_examples,
+            "synonyms":     final_synonyms,
+            "origin":       origin,
             "level":        level,
             "isFeatured":   False,
             "mastered":     False,
         })
-        stats[level] += 1
         uid += 1
 
 OUTPUT_FILE.write_text(json.dumps(output, indent=2, ensure_ascii=False))
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
-has_origin = sum(1 for w in output if w["origin"])
-has_2ex    = sum(1 for w in output if len(w["examples"]) >= 2)
-has_syn    = sum(1 for w in output if w["synonyms"])
-
 print(f"\n── Results ──────────────────────────────────────────────────────────")
-for lvl in LEVELS:
-    print(f"  {lvl:<15} {stats[lvl]} words")
-print(f"  {'total':<15} {len(output)}")
-print(f"\n  has etymology  : {has_origin} / {len(output)}")
-print(f"  has 2 examples : {has_2ex} / {len(output)}")
-print(f"  has synonyms   : {has_syn} / {len(output)}")
+for lvl, s in stats.items():
+    n = s["total"]
+    print(f"\n  {lvl}  ({n} words)")
+    print(f"    2 examples : {s['full_ex']:>3} / {n}  ({s['full_ex']/n*100:.0f}%)")
+    print(f"    4+ synonyms: {s['full_syn']:>3} / {n}  ({s['full_syn']/n*100:.0f}%)")
+    print(f"    etymology  : {s['has_origin']:>3} / {n}  ({s['has_origin']/n*100:.0f}%)")
+
+print(f"\n  Total: {len(output)} words")
 print(f"\n✅  Written to {OUTPUT_FILE}")
 print(f"\n   Review, then copy into the app:")
 print(f"   cp words_generated.json VocabWidget/words.json")
-print(f"\n   Then commit words.json and delete words_generated.json.")
+print(f"   rm words_generated.json")
