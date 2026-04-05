@@ -122,6 +122,14 @@ _parser.add_argument(
     help="Words to select per level (default: 0 = auto-balance to the "
          "smallest pool so all levels stay even).",
 )
+_parser.add_argument(
+    "--delay",
+    type=float,
+    default=0.7,
+    metavar="SEC",
+    help="Seconds to wait between WordsAPI calls (default: 0.7). "
+         "Increase if you keep hitting 429 rate-limit errors.",
+)
 _args = _parser.parse_args()
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -144,6 +152,7 @@ WARN_AT_95_PCT   = int(DAILY_QUOTA * 0.95)
 
 _level_label = f"{WORDS_PER_LEVEL} words" if WORDS_PER_LEVEL else "auto-balance (max even)"
 print(f"\n  Quota this session : {DAILY_QUOTA:,} WordsAPI calls")
+print(f"  Request delay      : {WORDSAPI_DELAY}s  (~{int(60/WORDSAPI_DELAY)} req/min)")
 print(f"  Target per level   : {_level_label}")
 
 PREFERRED_POS = ["adjective", "verb", "noun", "adverb"]
@@ -154,7 +163,7 @@ LEVELS = {
     "advanced":     {"min": 1.9, "max": 3.1},
 }
 
-WORDSAPI_DELAY = 0.35
+WORDSAPI_DELAY = _args.delay
 FREEDICT_DELAY = 0.30
 
 # ── Validate environment ──────────────────────────────────────────────────────
