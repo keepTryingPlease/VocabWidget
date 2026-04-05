@@ -95,11 +95,11 @@ _parser = argparse.ArgumentParser(
     epilog="""
 Examples
 ────────
-  # Use full upgraded quota (25 000 calls) to score everything in one run:
+  # Score all 3 000 candidates and auto-select the maximum even word count:
   python3 scripts/build_master_list.py --quota 25000
 
-  # Build 700 words per level instead of the default 500:
-  python3 scripts/build_master_list.py --quota 25000 --words-per-level 700
+  # Same, but cap each level at 600 even if the pool is larger:
+  python3 scripts/build_master_list.py --quota 25000 --words-per-level 600
 
   # Dry-run with a small quota to test caching / output without burning calls:
   python3 scripts/build_master_list.py --quota 50
@@ -116,10 +116,11 @@ _parser.add_argument(
 _parser.add_argument(
     "--words-per-level",
     type=int,
-    default=500,
+    default=0,
     metavar="N",
     dest="words_per_level",
-    help="Target number of words to select per difficulty level (default: 500).",
+    help="Words to select per level (default: 0 = auto-balance to the "
+         "smallest pool so all levels stay even).",
 )
 _args = _parser.parse_args()
 
@@ -134,15 +135,16 @@ SCORES_CACHE     = CACHE_DIR / "candidate_scores.json"
 ENRICHMENT_CACHE = CACHE_DIR / "enrichment.json"
 OUTPUT_FILE      = pathlib.Path("words_generated.json")
 
-WORDS_PER_LEVEL  = _args.words_per_level
+WORDS_PER_LEVEL  = _args.words_per_level   # 0 = auto-balance in Phase 2
 MAX_EXAMPLES     = 2    # try to reach this from both APIs combined
 MAX_SYNONYMS     = 12   # ceiling after merging both APIs
 DAILY_QUOTA      = _args.quota
 WARN_AT_80_PCT   = int(DAILY_QUOTA * 0.80)
 WARN_AT_95_PCT   = int(DAILY_QUOTA * 0.95)
 
+_level_label = f"{WORDS_PER_LEVEL} words" if WORDS_PER_LEVEL else "auto-balance (max even)"
 print(f"\n  Quota this session : {DAILY_QUOTA:,} WordsAPI calls")
-print(f"  Target per level   : {WORDS_PER_LEVEL} words")
+print(f"  Target per level   : {_level_label}")
 
 PREFERRED_POS = ["adjective", "verb", "noun", "adverb"]
 
@@ -472,7 +474,7 @@ print(f"\n  ✅  Phase 1 complete  ({wordsapi_calls} WordsAPI calls this session
 
 # ── Phase 2: Select best 500 per level ────────────────────────────────────────
 
-print("\n── Phase 2: Selecting best 500 per level ────────────────────────────")
+print("\n── Phase 2: Selecting words per level ───────────────────────────────")
 
 # Bucket all scored (non-None) candidates by level.
 # Re-parse from the stored raw bodies so we always work from the full data.
@@ -489,18 +491,25 @@ for w, raw in scores_cache.items():
             bucketed[lvl].append(entry)
             break
 
+# Auto-balance: use the smallest pool so all levels are the same size.
+# A manual --words-per-level cap is respected when provided.
+pool_sizes = {lvl: len(bucketed[lvl]) for lvl in LEVELS}
+auto_cap   = min(pool_sizes.values())
+target     = min(WORDS_PER_LEVEL, auto_cap) if WORDS_PER_LEVEL else auto_cap
+
+print(f"  Pool sizes  →  " + "  |  ".join(
+    f"{lvl}: {n}" for lvl, n in pool_sizes.items()
+))
+print(f"  Selecting {target} words per level (balanced to smallest pool)\n")
+
 selected: dict[str, list] = {}
 for lvl in LEVELS:
     pool = bucketed[lvl]
-    # Sort by Zipf descending: highest Zipf = most common = highest quality at level
+    # Sort by Zipf descending: highest Zipf = most recognisable at that level
     pool.sort(key=lambda e: e["zipf"], reverse=True)
-    chosen = pool[:WORDS_PER_LEVEL]
+    chosen = pool[:target]
     selected[lvl] = chosen
-    status = "✅" if len(chosen) >= WORDS_PER_LEVEL else "⚠️ "
     print(f"  {lvl:<15}  {len(pool):>4} in band  →  selected {len(chosen)}")
-    if len(chosen) < WORDS_PER_LEVEL:
-        print(f"    {status}  Only {len(chosen)} / {WORDS_PER_LEVEL} available — "
-              f"score more candidates to reach the target.")
 
 total_selected = sum(len(v) for v in selected.values())
 print(f"\n  Total selected: {total_selected} words")
