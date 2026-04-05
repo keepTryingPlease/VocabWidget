@@ -13,12 +13,33 @@ class UserLibrary: ObservableObject {
     @Published private(set) var collections:   [String: Set<Int>]   // name → word IDs
 
     private enum Keys {
-        static let liked       = "likedWordIDs"
-        static let mastered    = "masteredWordIDs"
-        static let collections = "wordCollections"
+        static let liked        = "likedWordIDs"
+        static let mastered     = "masteredWordIDs"
+        static let collections  = "wordCollections"
+        static let fingerprint  = "wordBankFingerprint"
+        // Keys owned by other objects — cleared here on word bank change.
+        static let scheduler    = "deckSchedulerState"
+        static let milestones   = "shownMilestoneCounts"
     }
 
     init() {
+        // ── Word bank change detection ────────────────────────────────────────
+        // If the fingerprint doesn't match the current words.json, wipe all
+        // persisted user data so stale IDs don't silently corrupt state.
+        let storedFingerprint = UserDefaults.standard.string(forKey: Keys.fingerprint)
+        if storedFingerprint != VocabularyStore.fingerprint {
+            for key in [Keys.liked, Keys.mastered, Keys.collections,
+                        Keys.scheduler, Keys.milestones] {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+            UserDefaults.standard.set(VocabularyStore.fingerprint, forKey: Keys.fingerprint)
+            likedIDs    = []
+            masteredIDs = []
+            collections = [:]
+            return
+        }
+
+        // ── Normal load ───────────────────────────────────────────────────────
         let liked    = UserDefaults.standard.array(forKey: Keys.liked)    as? [Int] ?? []
         let mastered = UserDefaults.standard.array(forKey: Keys.mastered) as? [Int] ?? []
         likedIDs    = Set(liked)

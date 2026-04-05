@@ -51,6 +51,20 @@ struct VocabularyStore {
     }()
 
     // ---------------------------------------------------------
+    // MARK: - Word bank fingerprint
+    // A stable checksum derived from the sorted word IDs.
+    // Changes whenever words.json is replaced with a different set of words,
+    // allowing UserLibrary to detect and reset stale user data.
+    // ---------------------------------------------------------
+    static let fingerprint: String = {
+        var hash: UInt64 = 5381
+        for id in words.map(\.id).sorted() {
+            hash = ((hash &<< 5) &+ hash) &+ UInt64(bitPattern: Int64(id))
+        }
+        return "\(words.count)-\(hash)"
+    }()
+
+    // ---------------------------------------------------------
     // MARK: - Featured words (widget pool)
     // Only words marked isFeatured: true. The widget picks one
     // per day using the day-of-year as an index into this list.
