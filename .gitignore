@@ -26,3 +26,6 @@ Pods/
 
 # macOS
 .DS_Store
+
+# Word list generation — output files (scripts themselves are committed)
+words_generated.json

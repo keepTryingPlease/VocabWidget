@@ -2,15 +2,22 @@
 // The main screen of the app.
 //
 // LEARNING NOTES:
-// - DragGesture.onChanged fires continuously as the finger moves, letting us
-//   move the card in real time by storing translation in @State.
-// - DragGesture.onEnded gives us both the final translation AND predictedEndTranslation
-//   (velocity-based), so a quick flick completes the swipe even if short.
-// - ZStack layers views back-to-front. The background card sits behind the
-//   foreground card and scales up as the drag progresses, creating the illusion
-//   of a physical stack.
-// - DispatchQueue.main.asyncAfter lets us wait for the fly-off animation to finish
-//   before resetting state (no visible jump).
+// - Instagram Reels-style full-screen paging: the entire screen — level pill,
+//   word content, pronunciation button, word bank button — moves as one unit.
+//   The adjacent screen is offset by exactly one screen-height, so it sits just
+//   out of view until the drag pulls it in.
+// - GeometryReader wraps the outer ZStack to capture the true screen height.
+//   This height is used both to position adjacent pages and to animate the
+//   fly-out on swipe completion.
+// - .clipped() on the ZStack clips anything that strays outside the screen
+//   bounds, giving the illusion of a clean vertical pager.
+// - Background pages get .allowsHitTesting(false) so only the foreground page's
+//   buttons are tappable.
+// - Rubberband resistance (raw * 0.15) gives tactile feedback when the user
+//   tries to swipe back from the very first word in the deck.
+// - For the level-switch animation, all state changes are batched in a single
+//   Transaction with no animation, so the new screen appears off-screen instantly
+//   before the spring animation slides it in — eliminating any flash.
 
 import SwiftUI
 
@@ -25,117 +32,94 @@ struct ContentView: View {
 
     let allWords = VocabularyStore.words
     @State private var selectedWord: VocabularyWord? = nil
+    @State private var infoWord:     VocabularyWord? = nil
 
-    // Which day we're viewing. 0 = today, -1 = yesterday, etc.
+    // Active vocabulary level. Changing it resets the deck to position 0.
+    @State private var selectedLevel: String = "beginner"
+
+    // Position in the current level's deck. 0 = first card, -1 = second, etc.
     @State private var dayOffset = 0
 
-    // How far the user has dragged the foreground card. Drives real-time movement.
+    // How far the user has dragged. Drives real-time screen movement.
     @State private var dragOffset: CGFloat = 0
+    // Used only for the level-switch entry animation (separate from drag).
+    @State private var entryOffset: CGFloat = 0
+    // Full screen height — captured from GeometryReader, used to position pages.
+    @State private var screenHeight: CGFloat = 852
     @State private var isFetchingAudio = false
 
     // Swipe must exceed this distance (or predicted velocity equivalent) to complete.
-    private let swipeThreshold: CGFloat = 120
+    private let swipeThreshold: CGFloat = 100
 
-    // 0.0 → 1.0 as drag approaches the threshold. Used to scale the background card.
-    private var swipeProgress: CGFloat {
-        min(abs(dragOffset) / swipeThreshold, 1.0)
+    // Words filtered to the active level, in their shuffled deck order.
+    private var filteredWords: [VocabularyWord] {
+        VocabularyStore.words.filter { $0.level == selectedLevel }
     }
 
-    private var dayLabel: String {
-        switch dayOffset {
-        case 0:  return "Today"
-        case -1: return "Yesterday"
-        default:
-            let date = Calendar.current.date(byAdding: .day, value: dayOffset, to: Date()) ?? Date()
-            let fmt = DateFormatter()
-            fmt.dateFormat = "EEEE, MMM d"
-            return fmt.string(from: date)
+    // Returns the word at a given deck offset within the active level.
+    private func word(forOffset offset: Int) -> VocabularyWord {
+        guard !filteredWords.isEmpty else { return VocabularyStore.words[0] }
+        let count = filteredWords.count
+        let index = (((-offset) % count) + count) % count
+        return filteredWords[index]
+    }
+
+    private var levelDisplayName: String {
+        switch selectedLevel {
+        case "beginner":     return "Beginner"
+        case "intermediate": return "Intermediate"
+        case "advanced":     return "Advanced"
+        default:             return selectedLevel.capitalized
         }
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-
-                Spacer()
-
-                Text(dayLabel)
-                    .font(.subheadline)
-                    .foregroundStyle(Color.appSecondary)
-                    .padding(.bottom, 24)
-
-                // ── Card stack ────────────────────────────────────────────
+            GeometryReader { screen in
                 ZStack {
 
-                    // Background card — the word that will appear after a completed swipe.
-                    // Only rendered while the user is actively dragging.
-                    // Starts slightly scaled down and grows to full size as swipeProgress → 1.
-                    if abs(dragOffset) > 2 {
-                        let goingDown = dragOffset > 0
-                        let canShow   = goingDown || dayOffset < 0
-                        if canShow {
-                            wordContent(for: goingDown ? dayOffset - 1 : dayOffset + 1)
-                                .scaleEffect(0.88 + 0.12 * swipeProgress)
+                    // Page above — visible when swiping down (going back).
+                    if dragOffset > 2 && dayOffset < 0 {
+                        screenContent(for: dayOffset + 1)
+                            .offset(y: -screen.size.height + dragOffset)
+                            .allowsHitTesting(false)
+                    }
+
+                    // Page below — visible when swiping up (going forward).
+                    if dragOffset < -2 {
+                        screenContent(for: dayOffset - 1)
+                            .offset(y: screen.size.height + dragOffset)
+                            .allowsHitTesting(false)
+                    }
+
+                    // Foreground page — follows the finger and any entry animation.
+                    screenContent(for: dayOffset)
+                        .offset(y: dragOffset + entryOffset)
+                }
+                .clipped()
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in
+                            let raw = value.translation.height
+                            // Rubberband resistance when trying to go back past the first page.
+                            dragOffset = (raw > 0 && dayOffset >= 0) ? raw * 0.15 : raw
                         }
-                    }
-
-                    // Foreground card — follows the finger in real time.
-                    wordContent(for: dayOffset)
-                        .offset(y: dragOffset)
-                        .gesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    dragOffset = value.translation.height
-                                }
-                                .onEnded { value in
-                                    handleSwipeEnd(value)
-                                }
-                        )
-                }
-
-                // ── Pronunciation button ──────────────────────────────────
-                Button {
-                    Task {
-                        isFetchingAudio = true
-                        await PronunciationService.shared.speak(VocabularyStore.word(forDayOffset: dayOffset).word)
-                        isFetchingAudio = false
-                    }
-                } label: {
-                    if isFetchingAudio {
-                        ProgressView()
-                            .tint(Color.appSecondary)
-                            .frame(width: 44, height: 44)
-                    } else {
-                        Image(systemName: "speaker.wave.2")
-                            .font(.title2)
-                            .foregroundStyle(Color.appSecondary)
-                            .frame(width: 44, height: 44)
-                    }
-                }
-                .padding(.top, 16)
-
-                Spacer()
-
-                // ── Word Bank button ──────────────────────────────────────
-                NavigationLink {
-                    WordBankView()
-                } label: {
-                    Label("Word Bank", systemImage: "books.vertical")
-                        .font(.custom("Inter_18pt-Regular", size: 16))
-                        .foregroundStyle(Color.appPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Color.appPrimary.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-                .padding(.horizontal, 32)
-                .padding(.bottom, 40)
+                        .onEnded { value in
+                            handleSwipeEnd(value, height: screen.size.height)
+                        }
+                )
+                .onAppear { screenHeight = screen.size.height }
+                .onChange(of: screen.size) { _, new in screenHeight = new.height }
             }
-            .background(Color.appBackground.ignoresSafeArea())
+            .ignoresSafeArea()
+            .background(Color.appBackground)
             .navigationBarHidden(true)
             .onChange(of: dayOffset) { _, _ in isFetchingAudio = false }
             .sheet(item: $selectedWord) { word in
                 WordDetailView(word: word)
+            }
+            .sheet(item: $infoWord) { word in
+                WordInfoView(word: word)
             }
             .onOpenURL { url in
                 guard url.scheme == "vocabwidget",
@@ -148,11 +132,110 @@ struct ContentView: View {
         }
     }
 
-    // ── Word content view ─────────────────────────────────────────────────────
-    // Extracted so we can render it for both the foreground and background card.
+    // ── Full-screen page ──────────────────────────────────────────────────────
+    // Every swipeable page is the entire screen: level pill, word, pronunciation
+    // button, and action buttons all move together as one unit.
+    @ViewBuilder
+    private func screenContent(for offset: Int) -> some View {
+        VStack(spacing: 0) {
+
+            Spacer()
+
+            // ── Level selector pill ───────────────────────────────────
+            Menu {
+                Button { switchLevel(to: "beginner") } label: {
+                    Label("Beginner",     systemImage: selectedLevel == "beginner"     ? "checkmark" : "")
+                }
+                Button { switchLevel(to: "intermediate") } label: {
+                    Label("Intermediate", systemImage: selectedLevel == "intermediate" ? "checkmark" : "")
+                }
+                Button { switchLevel(to: "advanced") } label: {
+                    Label("Advanced",     systemImage: selectedLevel == "advanced"     ? "checkmark" : "")
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(levelDisplayName)
+                        .font(.custom("Inter_18pt-Regular", size: 13))
+                        .foregroundStyle(Color.appPrimary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.appSecondary)
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 9)
+                .background(Color.appPrimary.opacity(0.07))
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.35), lineWidth: 1))
+            }
+            .padding(.bottom, 24)
+
+            // ── Word content ──────────────────────────────────────────
+            wordContent(for: offset)
+
+            // ── Pronunciation button ──────────────────────────────────
+            Button {
+                Task {
+                    isFetchingAudio = true
+                    await PronunciationService.shared.speak(word(forOffset: dayOffset).word)
+                    isFetchingAudio = false
+                }
+            } label: {
+                if isFetchingAudio {
+                    ProgressView()
+                        .tint(Color.appSecondary)
+                        .frame(width: 44, height: 44)
+                } else {
+                    Image(systemName: "speaker.wave.2")
+                        .font(.title2)
+                        .foregroundStyle(Color.appSecondary)
+                        .frame(width: 44, height: 44)
+                }
+            }
+            .padding(.top, 16)
+
+            Spacer()
+
+            // ── Action buttons ────────────────────────────────────────
+            HStack(spacing: 0) {
+                actionButton(icon: "info.circle",     label: "Info") {
+                    infoWord = word(forOffset: dayOffset)
+                }
+                actionButton(icon: "heart",           label: "Like")
+                actionButton(icon: "checkmark.seal",  label: "Mastered")
+                actionButton(icon: "square.stack",    label: "Collections")
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 40)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.appBackground)
+    }
+
+    // ── Action button ─────────────────────────────────────────────────────────
+    @ViewBuilder
+    private func actionButton(
+        icon: String,
+        label: String,
+        action: @escaping () -> Void = {}
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 22))
+                    .foregroundStyle(Color.appSecondary)
+                Text(label)
+                    .font(.custom("Inter_18pt-Regular", size: 10))
+                    .foregroundStyle(Color.appSecondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+    }
+
+    // ── Word content ──────────────────────────────────────────────────────────
     @ViewBuilder
     private func wordContent(for offset: Int) -> some View {
-        let word = VocabularyStore.word(forDayOffset: offset)
+        let word = word(forOffset: offset)
         VStack(spacing: 16) {
             Text(word.word)
                 .font(.custom("PlayfairDisplay-Bold", size: 36))
@@ -169,119 +252,66 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
 
-            Text("\u{201C}\(word.example)\u{201D}")
-                .font(.custom("Inter_18pt-Regular", size: 15))
-                .italic()
-                .foregroundStyle(Color.appSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
+            if let example = word.examples.first {
+                Text("\u{201C}\(example)\u{201D}")
+                    .font(.custom("Inter_18pt-Regular", size: 15))
+                    .italic()
+                    .foregroundStyle(Color.appSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
         }
     }
 
     // ── Swipe logic ───────────────────────────────────────────────────────────
-    private func handleSwipeEnd(_ value: DragGesture.Value) {
+    private func handleSwipeEnd(_ value: DragGesture.Value, height: CGFloat) {
         let distance  = value.translation.height
         let predicted = value.predictedEndTranslation.height
-        let goingDown = distance > 0
-        let canSwipe  = goingDown || dayOffset < 0
+        let goingUp   = distance < 0          // swipe up = advance to next word
+        let canSwipe  = goingUp || dayOffset < 0
 
         // Complete if drag exceeded threshold OR flick velocity would carry it far enough.
         let shouldComplete = canSwipe &&
             (abs(distance) > swipeThreshold || abs(predicted) > swipeThreshold * 2)
 
         if shouldComplete {
-            // Fly the card off screen, then update state once it's gone.
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                dragOffset = goingDown ? 1000 : -1000
+            // Fly the page off screen, then update state once it's gone.
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.92)) {
+                dragOffset = goingUp ? -height : height
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                dayOffset += goingDown ? -1 : 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+                dayOffset += goingUp ? -1 : 1
                 dragOffset = 0
             }
         } else {
             // Not far enough — snap back with a bouncy spring.
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) {
                 dragOffset = 0
             }
         }
     }
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MARK: - WordBankView
-// Full list of all words, pushed via NavigationLink from ContentView.
-// ─────────────────────────────────────────────────────────────────────────────
-struct WordBankView: View {
-    let allWords = VocabularyStore.words
-    @State private var selectedWord: VocabularyWord? = nil
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                ForEach(allWords) { word in
-                    Button {
-                        selectedWord = word
-                    } label: {
-                        WordCard(word: word, isHighlighted: false)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 16)
+    // ── Level switch ──────────────────────────────────────────────────────────
+    // Batch all state changes atomically (no animation) so the new screen appears
+    // off-screen instantly, then animate it sliding in from below.
+    private func switchLevel(to level: String) {
+        guard level != selectedLevel else { return }
+        isFetchingAudio = false
+        let t = Transaction(animation: nil)
+        withTransaction(t) {
+            selectedLevel = level
+            dayOffset     = 0
+            entryOffset   = screenHeight
         }
-        .background(Color.appBackground.ignoresSafeArea())
-        .navigationTitle("Word Bank")
-        .navigationBarTitleDisplayMode(.large)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .sheet(item: $selectedWord) { word in
-            WordDetailView(word: word)
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) {
+            entryOffset = 0
         }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MARK: - WordCard
-// Used in WordBankView. Leading-aligned card for list display.
-// ─────────────────────────────────────────────────────────────────────────────
-struct WordCard: View {
-    let word: VocabularyWord
-    let isHighlighted: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(word.word)
-                    .font(.title2)
-                    .bold()
-                    .foregroundStyle(isHighlighted ? .white : .primary)
-
-                Text(word.partOfSpeech)
-                    .font(.caption)
-                    .italic()
-                    .foregroundStyle(isHighlighted ? .white.opacity(0.8) : .secondary)
-            }
-
-            Text(word.definition)
-                .font(.body)
-                .foregroundStyle(isHighlighted ? .white : .primary)
-
-            Text("\u{201C}\(word.example)\u{201D}")
-                .font(.caption)
-                .italic()
-                .foregroundStyle(isHighlighted ? .white.opacity(0.75) : .secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(isHighlighted ? Color.blue : Color(.systemGray6))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - WordDetailView
-// Full-screen detail sheet shown when tapping a word in the word bank.
+// Full-screen detail sheet — used by the widget deep link (vocabwidget://word/id).
 // ─────────────────────────────────────────────────────────────────────────────
 struct WordDetailView: View {
     let word: VocabularyWord
@@ -312,14 +342,21 @@ struct WordDetailView: View {
                             .font(.body)
                     }
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("Example", systemImage: "quote.opening")
-                            .font(.headline)
-                            .foregroundStyle(.blue)
-                        Text("\u{201C}\(word.example)\u{201D}")
-                            .font(.body)
-                            .italic()
-                            .foregroundStyle(.secondary)
+                    if !word.examples.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(word.examples.count > 1 ? "Examples" : "Example",
+                                  systemImage: "quote.opening")
+                                .font(.headline)
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(word.examples, id: \.self) { example in
+                                    Text("\u{201C}\(example)\u{201D}")
+                                        .font(.body)
+                                        .italic()
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                     }
                 }
                 .padding()

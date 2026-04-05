@@ -48,7 +48,7 @@ struct VocabProvider: TimelineProvider {
 
     func placeholder(in context: Context) -> VocabEntry {
         // This should return quickly without hitting network/disk.
-        VocabEntry(date: .now, word: VocabularyStore.words[0])
+        VocabEntry(date: .now, word: VocabularyStore.featuredWords.first ?? VocabularyStore.words[0])
     }
 
     func getSnapshot(in context: Context, completion: @escaping (VocabEntry) -> Void) {
@@ -66,12 +66,8 @@ struct VocabProvider: TimelineProvider {
 
         for dayOffset in 0..<7 {
             guard let date = calendar.date(byAdding: .day, value: dayOffset, to: .now) else { continue }
-
-            // Use dayOfYear arithmetic so we get the right word for each future day.
-            let dayOfYear = calendar.ordinality(of: .day, in: .year, for: date) ?? 1
-            let index = (dayOfYear - 1) % VocabularyStore.words.count
-            let word = VocabularyStore.words[index]
-
+            // Use the featured-only pool so the widget always shows a curated word.
+            let word = VocabularyStore.featuredWord(forDayOffset: dayOffset)
             entries.append(VocabEntry(date: date, word: word))
         }
 
@@ -117,7 +113,7 @@ struct VocabWidgetEntryView: View {
                     .font(.subheadline)
                     .lineLimit(2)
 
-                Text("\u{201C}\(entry.word.example)\u{201D}")
+                Text("\u{201C}\(entry.word.examples.first ?? "")\u{201D}")
                     .font(.caption)
                     .italic()
                     .foregroundStyle(.secondary)
@@ -212,6 +208,6 @@ struct VocabLockScreenWidget: Widget {
 #Preview(as: .accessoryRectangular) {
     VocabLockScreenWidget()
 } timeline: {
-    VocabEntry(date: .now, word: VocabularyStore.words[0])
-    VocabEntry(date: .now, word: VocabularyStore.words[1])
+    VocabEntry(date: .now, word: VocabularyStore.wordOfTheDay)
+    VocabEntry(date: .now, word: VocabularyStore.featuredWord(forDayOffset: 1))
 }
