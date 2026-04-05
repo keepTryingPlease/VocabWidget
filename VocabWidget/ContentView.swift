@@ -38,6 +38,11 @@ struct ContentView: View {
     @State private var toastMilestone:       Milestone? = nil
     @State private var celebrationMilestone: Milestone? = nil
 
+    // ── DEBUG ONLY — remove before release ───────────────────────────────────
+    #if DEBUG
+    @State private var debugMilestoneIndex = 0
+    #endif
+
     @State private var selectedWord:       VocabularyWord? = nil
     @State private var infoWord:           VocabularyWord? = nil
     @State private var collectionsWord:    VocabularyWord? = nil
@@ -176,6 +181,33 @@ struct ContentView: View {
                 }
             }
             .animation(.spring(response: 0.4, dampingFraction: 0.8), value: toastMilestone?.id)
+            // ── DEBUG ONLY — remove before release ───────────────────────
+            #if DEBUG
+            .overlay(alignment: .topLeading) {
+                Button {
+                    let milestone = Milestone.all[debugMilestoneIndex % Milestone.all.count]
+                    debugMilestoneIndex += 1
+                    if milestone.isBig {
+                        celebrationMilestone = milestone
+                    } else {
+                        toastMilestone = milestone
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                            toastMilestone = nil
+                        }
+                    }
+                } label: {
+                    Text("🏆 \(debugMilestoneIndex % Milestone.all.count + 1)/\(Milestone.all.count)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.red.opacity(0.7))
+                        .clipShape(Capsule())
+                }
+                .padding(.top, 56)
+                .padding(.leading, 16)
+            }
+            #endif
             .onOpenURL { url in
                 guard url.scheme == "vocabwidget",
                       url.host == "word",
