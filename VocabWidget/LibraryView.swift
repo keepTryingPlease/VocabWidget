@@ -143,7 +143,7 @@ struct LibraryView: View {
                     } label: {
                         HStack {
                             Text(name)
-                                .font(.custom("PlayfairDisplay-Bold", size: 17))
+                                .font(.custom("Inter_18pt-Regular", size: 17))
                                 .foregroundStyle(Color.appPrimary)
                             Spacer()
                             Text("\(library.words(inCollection: name).count)")
