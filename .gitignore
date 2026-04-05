@@ -27,7 +27,5 @@ Pods/
 # macOS
 .DS_Store
 
-# WordsAPI enrichment script (contains API key — never commit)
-enrich_words.py
-frequency_cache.json
-replace_nulls.py
+# Word list generation — output files (scripts themselves are committed)
+words_generated.json

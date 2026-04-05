@@ -32,6 +32,7 @@ struct ContentView: View {
 
     let allWords = VocabularyStore.words
     @State private var selectedWord: VocabularyWord? = nil
+    @State private var infoWord:     VocabularyWord? = nil
 
     // Active vocabulary level. Changing it resets the deck to position 0.
     @State private var selectedLevel: String = "beginner"
@@ -117,6 +118,9 @@ struct ContentView: View {
             .sheet(item: $selectedWord) { word in
                 WordDetailView(word: word)
             }
+            .sheet(item: $infoWord) { word in
+                WordInfoView(word: word)
+            }
             .onOpenURL { url in
                 guard url.scheme == "vocabwidget",
                       url.host == "word",
@@ -193,7 +197,9 @@ struct ContentView: View {
 
             // ── Action buttons ────────────────────────────────────────
             HStack(spacing: 0) {
-                actionButton(icon: "info.circle",     label: "Info")
+                actionButton(icon: "info.circle",     label: "Info") {
+                    infoWord = word(forOffset: dayOffset)
+                }
                 actionButton(icon: "heart",           label: "Like")
                 actionButton(icon: "checkmark.seal",  label: "Mastered")
                 actionButton(icon: "square.stack",    label: "Collections")
@@ -207,10 +213,12 @@ struct ContentView: View {
 
     // ── Action button ─────────────────────────────────────────────────────────
     @ViewBuilder
-    private func actionButton(icon: String, label: String) -> some View {
-        Button {
-            // TODO: wire up action
-        } label: {
+    private func actionButton(
+        icon: String,
+        label: String,
+        action: @escaping () -> Void = {}
+    ) -> some View {
+        Button(action: action) {
             VStack(spacing: 6) {
                 Image(systemName: icon)
                     .font(.system(size: 22))
