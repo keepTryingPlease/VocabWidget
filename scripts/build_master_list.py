@@ -86,8 +86,8 @@ ENRICHMENT_CACHE = CACHE_DIR / "enrichment.json"
 OUTPUT_FILE      = pathlib.Path("words_generated.json")
 
 WORDS_PER_LEVEL      = 500
-MAX_EXAMPLES         = 2
-MAX_SYNONYMS         = 8
+MAX_EXAMPLES         = 2    # try to reach this from both APIs combined
+MAX_SYNONYMS         = 12   # ceiling after merging both APIs; keeps lists useful without being overwhelming
 DAILY_QUOTA          = 2500
 WARN_AT_80_PCT       = int(DAILY_QUOTA * 0.80)   # 2 000
 WARN_AT_95_PCT       = int(DAILY_QUOTA * 0.95)   # 2 375
@@ -406,23 +406,32 @@ for level in LEVELS:
     for word_key, entry in collected[level].items():
         fd = enrichment.get(word_key, {"examples": [], "synonyms": [], "origin": None})
 
-        # ── Merge examples: WordsAPI first, Free Dictionary fills gaps ──────
-        final_examples = list(entry.get("examples") or [])
-        for ex in (fd.get("examples") or []):
+        # ── Merge examples ────────────────────────────────────────────────────
+        # Combine both sources; keep up to MAX_EXAMPLES unique sentences.
+        # WordsAPI examples come first, Free Dictionary fills any remaining slots.
+        seen_ex: set = set()
+        final_examples: list[str] = []
+        for ex in list(entry.get("examples") or []) + list(fd.get("examples") or []):
+            ex = ex.strip()
+            if ex and ex.lower() not in seen_ex:
+                seen_ex.add(ex.lower())
+                final_examples.append(ex)
             if len(final_examples) >= MAX_EXAMPLES:
                 break
-            if ex.strip() and ex not in final_examples:
-                final_examples.append(ex.strip())
 
-        # ── Merge synonyms: combine both sources, deduplicated ──────────────
-        seen_syn: set = {s.lower() for s in (entry.get("synonyms") or [])}
-        final_synonyms = list(entry.get("synonyms") or [])
-        for s in (fd.get("synonyms") or []):
+        # ── Merge synonyms ────────────────────────────────────────────────────
+        # Take every synonym from both APIs, deduplicate case-insensitively,
+        # and keep up to MAX_SYNONYMS.  If WordsAPI has 2 and Free Dict has 7,
+        # the result will have up to 9 unique synonyms (capped at MAX_SYNONYMS).
+        seen_syn: set = set()
+        final_synonyms: list[str] = []
+        for s in list(entry.get("synonyms") or []) + list(fd.get("synonyms") or []):
+            s = s.strip()
+            if s and s.lower() not in seen_syn:
+                seen_syn.add(s.lower())
+                final_synonyms.append(s)
             if len(final_synonyms) >= MAX_SYNONYMS:
                 break
-            if s.strip() and s.lower() not in seen_syn:
-                seen_syn.add(s.lower())
-                final_synonyms.append(s.strip())
 
         origin = fd.get("origin")   # WordsAPI rarely carries etymology
 
