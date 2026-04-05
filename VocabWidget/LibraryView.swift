@@ -40,6 +40,7 @@ struct LibraryView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .colorScheme(.dark)
                 .padding(.horizontal)
                 .padding(.vertical, 12)
 
@@ -69,6 +70,7 @@ struct LibraryView: View {
             .background(Color.appBackground)
             .navigationTitle("My Library")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Done") { dismiss() }
@@ -355,6 +357,7 @@ struct CollectionDetailView: View {
         .background(Color.appBackground)
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarColorScheme(.dark, for: .navigationBar)
         .sheet(item: $detailWord) { WordInfoView(word: $0) }
     }
 }
