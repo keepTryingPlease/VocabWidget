@@ -130,7 +130,7 @@ struct ContentView: View {
 
     // ── Full-screen page ──────────────────────────────────────────────────────
     // Every swipeable page is the entire screen: level pill, word, pronunciation
-    // button, and word bank button all move together as one unit.
+    // button, and action buttons all move together as one unit.
     @ViewBuilder
     private func screenContent(for offset: Int) -> some View {
         VStack(spacing: 0) {
@@ -191,23 +191,37 @@ struct ContentView: View {
 
             Spacer()
 
-            // ── Word Bank button ──────────────────────────────────────
-            NavigationLink {
-                WordBankView()
-            } label: {
-                Label("Word Bank", systemImage: "books.vertical")
-                    .font(.custom("Inter_18pt-Regular", size: 16))
-                    .foregroundStyle(Color.appPrimary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Color.appPrimary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            // ── Action buttons ────────────────────────────────────────
+            HStack(spacing: 0) {
+                actionButton(icon: "info.circle",     label: "Info")
+                actionButton(icon: "heart",           label: "Like")
+                actionButton(icon: "checkmark.seal",  label: "Mastered")
+                actionButton(icon: "square.stack",    label: "Collections")
             }
-            .padding(.horizontal, 32)
+            .padding(.horizontal, 16)
             .padding(.bottom, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appBackground)
+    }
+
+    // ── Action button ─────────────────────────────────────────────────────────
+    @ViewBuilder
+    private func actionButton(icon: String, label: String) -> some View {
+        Button {
+            // TODO: wire up action
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 22))
+                    .foregroundStyle(Color.appSecondary)
+                Text(label)
+                    .font(.custom("Inter_18pt-Regular", size: 10))
+                    .foregroundStyle(Color.appSecondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
     }
 
     // ── Word content ──────────────────────────────────────────────────────────
@@ -286,80 +300,8 @@ struct ContentView: View {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MARK: - WordBankView
-// Full list of all words, pushed via NavigationLink from ContentView.
-// ─────────────────────────────────────────────────────────────────────────────
-struct WordBankView: View {
-    let allWords = VocabularyStore.words
-    @State private var selectedWord: VocabularyWord? = nil
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                ForEach(allWords) { word in
-                    Button {
-                        selectedWord = word
-                    } label: {
-                        WordCard(word: word, isHighlighted: false)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 16)
-        }
-        .background(Color.appBackground.ignoresSafeArea())
-        .navigationTitle("Word Bank")
-        .navigationBarTitleDisplayMode(.large)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .sheet(item: $selectedWord) { word in
-            WordDetailView(word: word)
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MARK: - WordCard
-// Used in WordBankView. Leading-aligned card for list display.
-// ─────────────────────────────────────────────────────────────────────────────
-struct WordCard: View {
-    let word: VocabularyWord
-    let isHighlighted: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(word.word)
-                    .font(.title2)
-                    .bold()
-                    .foregroundStyle(isHighlighted ? .white : .primary)
-
-                Text(word.partOfSpeech)
-                    .font(.caption)
-                    .italic()
-                    .foregroundStyle(isHighlighted ? .white.opacity(0.8) : .secondary)
-            }
-
-            Text(word.definition)
-                .font(.body)
-                .foregroundStyle(isHighlighted ? .white : .primary)
-
-            Text("\u{201C}\(word.example)\u{201D}")
-                .font(.caption)
-                .italic()
-                .foregroundStyle(isHighlighted ? .white.opacity(0.75) : .secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(isHighlighted ? Color.blue : Color(.systemGray6))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - WordDetailView
-// Full-screen detail sheet shown when tapping a word in the word bank.
+// Full-screen detail sheet — used by the widget deep link (vocabwidget://word/id).
 // ─────────────────────────────────────────────────────────────────────────────
 struct WordDetailView: View {
     let word: VocabularyWord
