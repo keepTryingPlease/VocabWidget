@@ -3,9 +3,9 @@
 build_master_list.py
 ────────────────────
 Builds a clean 1 500-word master list for VocabWidget — 500 words per
-difficulty level — by requesting random words from WordsAPI within each
-Zipf frequency range, then filling any missing fields (examples,
-synonyms, etymology) from the Free Dictionary API.
+difficulty level — by scoring curated candidates with WordsAPI Zipf
+frequency, selecting the best per level, then enriching with the Free
+Dictionary API.
 
 Output schema (per word)
 ────────────────────────
@@ -14,7 +14,7 @@ Output schema (per word)
   partOfSpeech  "noun" / "adjective" / "verb" / etc.
   definition    string
   examples      list of up to 2 example sentences
-  synonyms      list of up to 8 synonyms
+  synonyms      list of up to 12 synonyms
   origin        etymology string, or null
   level         "beginner" / "intermediate" / "advanced"
   isFeatured    false
@@ -22,36 +22,47 @@ Output schema (per word)
 
 How it works
 ────────────
-  Phase 1 — Collect : Calls WordsAPI GET /words/?random=true with
-                       frequencyMin / frequencyMax set for each level.
-                       Stops once 500 unique words with definitions are
-                       confirmed per level.
+  Phase 1 — Score   : Reads every word from scripts/word_candidates.txt,
+                      calls WordsAPI GET /words/{word} for each.  The FULL
+                      raw API response (definitions, examples, synonyms,
+                      syllables, pronunciation, frequency, typeOf, hasTypes,
+                      etc.) is stored verbatim in candidate_scores.json so
+                      no data is ever discarded.  Results are cached after
+                      every single call so the script can be paused and
+                      resumed across days.
 
-  Phase 2 — Enrich  : For every collected word, calls the Free Dictionary
-                       API to fill any fields that WordsAPI left empty
-                       (examples, synonyms, etymology).  Both sources are
-                       merged so the final word always has the richest
-                       possible data.
+  Phase 2 — Select  : Buckets scored words into levels by their Zipf score,
+                      then takes the 500 best words per level (highest Zipf
+                      within each band = most recognisable, highest-quality
+                      words at that difficulty).
 
-  Both phases write to disk after every single API call so the script
-  can be safely interrupted and resumed at any point.  Re-running
+  Phase 3 — Enrich  : For every selected word, calls the Free Dictionary
+                      API (unlimited, no key) to fill or extend examples,
+                      synonyms, and etymology.  Both sources are merged so
+                      the final entry always has the richest possible data.
+
+  Phase 4 — Assemble: Writes words_generated.json ready to copy into the app.
+
+  Both WordsAPI phases write to disk after every single API call so the
+  script can be safely interrupted and resumed at any point.  Re-running
   tomorrow after a rate-limit hit will only fetch what is still missing.
 
 Zipf level boundaries
 ─────────────────────
-  beginner       4.5 – 5.5
-  intermediate   3.1 – 4.5
-  advanced       1.9 – 3.1
+  beginner       4.5 – 5.5   (common, high-value everyday words)
+  intermediate   3.1 – 4.5   (moderately frequent, SAT-level)
+  advanced       1.9 – 3.1   (GRE / literary / low-frequency)
 
 WordsAPI daily quota (free tier = 2 500 requests / day)
 ────────────────────────────────────────────────────────
   The script tracks every request it makes this session and warns you
-  at 80 % (2 000) and 95 % (2 375) of the daily limit.  If it hits
-  the limit before finishing, it stops cleanly, prints a summary of
-  what is still outstanding, and resumes correctly on the next run.
+  at 80 % (2 000) and 95 % (2 375).  If it hits the limit before the
+  full candidate list is scored, it stops cleanly, prints progress, and
+  resumes correctly on the next run.
 
-  Estimated usage:  ~1 650 WordsAPI calls  +  ~1 500 Free Dictionary
-  calls (unlimited).  Completes in a single day on the free tier.
+  With ~5 000 candidates you will need 2 – 3 days of scoring to cover
+  the full list.  The selection and enrichment phases then run once
+  enough candidates are scored in each band.
 
 Prerequisites
 ─────────────
@@ -80,17 +91,18 @@ import urllib.parse
 WORDSAPI_KEY  = os.environ.get("WORDSAPI_KEY", "")
 WORDSAPI_HOST = "wordsapiv1.p.rapidapi.com"
 
+CANDIDATES_FILE  = pathlib.Path("scripts/word_candidates.txt")
 CACHE_DIR        = pathlib.Path("scripts/cache")
-COLLECT_CACHE    = CACHE_DIR / "collected.json"
+SCORES_CACHE     = CACHE_DIR / "candidate_scores.json"
 ENRICHMENT_CACHE = CACHE_DIR / "enrichment.json"
 OUTPUT_FILE      = pathlib.Path("words_generated.json")
 
-WORDS_PER_LEVEL      = 500
-MAX_EXAMPLES         = 2    # try to reach this from both APIs combined
-MAX_SYNONYMS         = 12   # ceiling after merging both APIs; keeps lists useful without being overwhelming
-DAILY_QUOTA          = 2500
-WARN_AT_80_PCT       = int(DAILY_QUOTA * 0.80)   # 2 000
-WARN_AT_95_PCT       = int(DAILY_QUOTA * 0.95)   # 2 375
+WORDS_PER_LEVEL  = 500
+MAX_EXAMPLES     = 2    # try to reach this from both APIs combined
+MAX_SYNONYMS     = 12   # ceiling after merging both APIs
+DAILY_QUOTA      = 2500
+WARN_AT_80_PCT   = int(DAILY_QUOTA * 0.80)   # 2 000
+WARN_AT_95_PCT   = int(DAILY_QUOTA * 0.95)   # 2 375
 
 PREFERRED_POS = ["adjective", "verb", "noun", "adverb"]
 
@@ -111,18 +123,59 @@ if not WORDSAPI_KEY:
     print("    Then run:  export WORDSAPI_KEY=your_key_here")
     sys.exit(1)
 
+if not CANDIDATES_FILE.exists():
+    print(f"❌  Candidate list not found: {CANDIDATES_FILE}")
+    print("    Expected at scripts/word_candidates.txt")
+    sys.exit(1)
+
+# ── Load candidates ───────────────────────────────────────────────────────────
+
+def load_candidates() -> list[str]:
+    """
+    Parse word_candidates.txt — skip blank lines and section headers
+    (lines that start with #, contain only uppercase, or look like titles).
+    Returns a deduplicated list of lowercase words preserving first-seen order.
+    """
+    seen: set = set()
+    words: list[str] = []
+    for line in CANDIDATES_FILE.read_text(encoding="utf-8").splitlines():
+        w = line.strip()
+        # Skip blanks and comment/header lines
+        if not w or w.startswith("#") or w.startswith("=") or w.startswith("-"):
+            continue
+        # Skip lines that look like section headers (ALL CAPS or Title Case multi-word)
+        if w.isupper():
+            continue
+        # Normalise: lowercase, single token only
+        w = w.lower()
+        if " " in w or "\t" in w:
+            continue
+        if w not in seen:
+            seen.add(w)
+            words.append(w)
+    return words
+
+candidates = load_candidates()
+print(f"  Loaded {len(candidates)} unique candidate words from {CANDIDATES_FILE}")
+
 # ── Load caches ───────────────────────────────────────────────────────────────
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-collected:  dict = json.loads(COLLECT_CACHE.read_text())    if COLLECT_CACHE.exists()    else {}
-enrichment: dict = json.loads(ENRICHMENT_CACHE.read_text()) if ENRICHMENT_CACHE.exists() else {}
+# scores_cache: dict of word -> entry_dict | None
+#   None  = checked, WordsAPI returned no valid data (skip on future runs)
+#   dict  = {zipf, word, partOfSpeech, definition, examples, synonyms}
+scores_cache: dict = (
+    json.loads(SCORES_CACHE.read_text())
+    if SCORES_CACHE.exists() else {}
+)
 
-for lvl in LEVELS:
-    if lvl not in collected:
-        collected[lvl] = {}
+enrichment: dict = (
+    json.loads(ENRICHMENT_CACHE.read_text())
+    if ENRICHMENT_CACHE.exists() else {}
+)
 
-# ── Request counter (tracks usage this session, not lifetime) ─────────────────
+# ── Request counter ───────────────────────────────────────────────────────────
 
 wordsapi_calls = 0
 
@@ -135,22 +188,20 @@ def _print_quota_warning():
 
 # ── WordsAPI helper ───────────────────────────────────────────────────────────
 
-def fetch_random_word(freq_min: float, freq_max: float) -> dict | None:
+def fetch_word(word: str) -> dict | None | str:
     """
-    GET /words/?random=true&frequencyMin=X&frequencyMax=Y
-    Returns the parsed response body, "RATE_LIMITED", or None on error.
+    GET /words/{word}
+    Returns:
+      dict          — parsed response with at least a definition
+      None          — word not found or no usable definition
+      "RATE_LIMITED"— 429 response
     """
     global wordsapi_calls
-    params = urllib.parse.urlencode({
-        "random":       "true",
-        "frequencyMin": freq_min,
-        "frequencyMax": freq_max,
-        "hasDetails":   "definitions",
-    })
+    encoded = urllib.parse.quote(word.lower())
     conn = http.client.HTTPSConnection(WORDSAPI_HOST)
     try:
         conn.request(
-            "GET", f"/words/?{params}",
+            "GET", f"/words/{encoded}",
             headers={
                 "X-RapidAPI-Key":  WORDSAPI_KEY,
                 "X-RapidAPI-Host": WORDSAPI_HOST,
@@ -163,11 +214,11 @@ def fetch_random_word(freq_min: float, freq_max: float) -> dict | None:
 
         if res.status == 429:
             return "RATE_LIMITED"
-        if res.status != 200 or "word" not in body:
+        if res.status != 200:
             return None
         return body
     except Exception as e:
-        print(f"  ⚠️  network error: {e}")
+        print(f"  ⚠️  network error ({word}): {e}")
         return None
     finally:
         conn.close()
@@ -182,8 +233,21 @@ def best_result(results: list) -> dict | None:
     return results[0]
 
 def parse_word_entry(body: dict) -> dict | None:
+    """Extract a clean entry dict from a full WordsAPI response body."""
     word = (body.get("word") or "").strip()
-    if not word or " " in word:   # skip phrases
+    if not word or " " in word:
+        return None
+
+    # Must have a Zipf frequency.
+    # WordsAPI returns frequency as either {"zipf": 3.87, ...} or a bare float.
+    freq = body.get("frequency")
+    if isinstance(freq, dict):
+        zipf = freq.get("zipf")
+    elif isinstance(freq, (int, float)):
+        zipf = float(freq)
+    else:
+        zipf = None
+    if zipf is None:
         return None
 
     results = body.get("results") or []
@@ -197,7 +261,7 @@ def parse_word_entry(body: dict) -> dict | None:
 
     part_of_speech = chosen.get("partOfSpeech") or "unknown"
 
-    # Collect examples (prefer chosen sense, then others)
+    # Collect examples (prefer chosen sense, then other senses)
     raw_examples: list[str] = []
     for r in [chosen] + [r for r in results if r is not chosen]:
         for ex in (r.get("examples") or []):
@@ -209,7 +273,7 @@ def parse_word_entry(body: dict) -> dict | None:
         if len(raw_examples) >= MAX_EXAMPLES:
             break
 
-    # Collect synonyms across all results, deduplicated
+    # Collect synonyms across all senses, deduplicated
     seen_syn: set = set()
     raw_synonyms: list[str] = []
     for r in results:
@@ -220,6 +284,7 @@ def parse_word_entry(body: dict) -> dict | None:
                 raw_synonyms.append(s)
 
     return {
+        "zipf":         float(zipf),
         "word":         word,
         "partOfSpeech": part_of_speech,
         "definition":   definition,
@@ -231,19 +296,15 @@ def parse_word_entry(body: dict) -> dict | None:
 
 def fetch_free_dict(word: str) -> dict:
     """
-    Calls the Free Dictionary API and returns a dict with:
-      examples  : list of up to MAX_EXAMPLES sentences
-      synonyms  : list of up to MAX_SYNONYMS synonyms
-      origin    : etymology string or None
-
-    Used to fill any fields that WordsAPI left empty.
+    Calls the Free Dictionary API.
+    Returns {examples, synonyms, origin} — empty lists / None on failure.
     """
     encoded = urllib.parse.quote(word.lower())
     conn = http.client.HTTPSConnection("api.dictionaryapi.dev")
     try:
         conn.request("GET", f"/api/v2/entries/en/{encoded}",
                      headers={"User-Agent": "VocabWidget/1.0"})
-        res  = conn.getresponse()
+        res = conn.getresponse()
         if res.status != 200:
             return {"examples": [], "synonyms": [], "origin": None}
 
@@ -269,7 +330,6 @@ def fetch_free_dict(word: str) -> dict:
                     if ex and ex not in raw_examples:
                         raw_examples.append(ex)
 
-        # Deduplicate synonyms
         seen: set = set()
         deduped: list[str] = []
         for s in raw_synonyms:
@@ -288,114 +348,160 @@ def fetch_free_dict(word: str) -> dict:
     finally:
         conn.close()
 
+# ── Stop helper ───────────────────────────────────────────────────────────────
+
 def _stop_with_summary(reason: str):
-    """Print a clear summary of outstanding work and exit."""
+    """Print progress summary and exit cleanly."""
+    by_level = {lvl: [] for lvl in LEVELS}
+    for w, raw in scores_cache.items():
+        if raw is None:
+            continue
+        entry = parse_word_entry(raw)
+        if entry is None:
+            continue
+        z = entry["zipf"]
+        for lvl, bounds in LEVELS.items():
+            if bounds["min"] <= z <= bounds["max"]:
+                by_level[lvl].append(w)
+                break
+    scored = {w: v for w, v in scores_cache.items() if v is not None}
+
     print(f"\n{'─'*68}")
     print(f"⛔  {reason}")
     print(f"{'─'*68}")
-    total_collected = sum(len(v) for v in collected.values())
-    total_enriched  = len(enrichment)
-    print(f"\n  Progress saved:")
+    print(f"\n  Candidates scored : {len(scores_cache)} / {len(candidates)}")
+    print(f"  Valid scored words: {len(scored)}")
+    print(f"\n  Words per level (scored so far):")
     for lvl in LEVELS:
-        n = len(collected.get(lvl, {}))
-        bar = "█" * (n // 20) + f"  {n}/{WORDS_PER_LEVEL}"
+        n = len(by_level[lvl])
+        bar = "█" * (n // 20) + f"  {n} / {WORDS_PER_LEVEL} needed"
         print(f"    {lvl:<15} {bar}")
-    print(f"\n  Enriched so far : {total_enriched} / {total_collected} words")
-    print(f"  WordsAPI calls  : {wordsapi_calls} this session")
-    print(f"\n  Nothing was lost — re-run tomorrow to continue:")
+    print(f"\n  WordsAPI calls this session: {wordsapi_calls}")
+    print(f"\n  Re-run tomorrow to continue:")
     print(f"    python3 scripts/build_master_list.py")
     print(f"{'─'*68}\n")
     sys.exit(0)
 
-# ── Phase 1: Collect random words per level ───────────────────────────────────
+# ── Phase 1: Score candidates via WordsAPI ────────────────────────────────────
 
-print("── Phase 1: Collecting random words ────────────────────────────────")
+print("\n── Phase 1: Scoring candidates via WordsAPI ─────────────────────────")
 
-for level, bounds in LEVELS.items():
-    already = len(collected[level])
-    needed  = WORDS_PER_LEVEL - already
-    if needed <= 0:
-        print(f"  {level:<15} ✅  {already}/{WORDS_PER_LEVEL} — complete, skipping")
+unscored = [w for w in candidates if w not in scores_cache]
+already  = len(scores_cache)
+print(f"  {already} already scored (cached) — skipping")
+print(f"  {len(unscored)} candidates to score\n")
+
+for i, candidate in enumerate(unscored):
+    if wordsapi_calls >= DAILY_QUOTA:
+        _stop_with_summary(f"Daily quota of {DAILY_QUOTA} requests reached.")
+
+    result = fetch_word(candidate)
+
+    if result == "RATE_LIMITED":
+        _stop_with_summary("WordsAPI returned 429 — daily quota exhausted.")
+
+    if result is None:
+        scores_cache[candidate] = None
+        SCORES_CACHE.write_text(json.dumps(scores_cache, indent=2, ensure_ascii=False))
+        time.sleep(WORDSAPI_DELAY)
         continue
 
-    print(f"\n  {level}  ({already} collected, need {needed} more)")
-
-    while len(collected[level]) < WORDS_PER_LEVEL:
-        if wordsapi_calls >= DAILY_QUOTA:
-            _stop_with_summary(f"Daily quota of {DAILY_QUOTA} requests reached.")
-
-        result = fetch_random_word(bounds["min"], bounds["max"])
-
-        if result == "RATE_LIMITED":
-            _stop_with_summary("WordsAPI returned 429 — daily quota exhausted.")
-
-        if result is None:
-            time.sleep(WORDSAPI_DELAY)
-            continue
-
-        entry = parse_word_entry(result)
-        if entry is None:
-            time.sleep(WORDSAPI_DELAY)
-            continue
-
-        key = entry["word"].lower()
-
-        # Skip duplicates across all levels
-        if any(key in collected[lvl] for lvl in LEVELS):
-            time.sleep(WORDSAPI_DELAY)
-            continue
-
-        collected[level][key] = entry
-        COLLECT_CACHE.write_text(json.dumps(collected, indent=2, ensure_ascii=False))
-
-        count    = len(collected[level])
-        has_ex   = "ex✓" if entry["examples"]  else "ex–"
-        has_syn  = "syn✓" if entry["synonyms"] else "syn–"
-        print(f"    [{count:>3}/{WORDS_PER_LEVEL}]  {entry['word']:<22} "
-              f"{entry['partOfSpeech']:<12} {has_ex}  {has_syn}")
+    entry = parse_word_entry(result)
+    if entry is None:
+        # Word had no usable definition/frequency — store None so we never
+        # re-check it, but the raw body is lost intentionally (not useful).
+        scores_cache[candidate] = None
+        SCORES_CACHE.write_text(json.dumps(scores_cache, indent=2, ensure_ascii=False))
         time.sleep(WORDSAPI_DELAY)
+        continue
+
+    # Store the FULL raw API response verbatim.  parse_word_entry is called
+    # again at selection time (Phase 2) so nothing is permanently discarded.
+    scores_cache[candidate] = result
+    SCORES_CACHE.write_text(json.dumps(scores_cache, indent=2, ensure_ascii=False))
+
+    lvl_label = next(
+        (l for l, b in LEVELS.items() if b["min"] <= entry["zipf"] <= b["max"]),
+        "out-of-range"
+    )
+    print(f"  [{already+i+1:>5}/{len(candidates)}]  {candidate:<22} "
+          f"zipf={entry['zipf']:.2f}  {lvl_label:<15} {entry['partOfSpeech']}")
+    time.sleep(WORDSAPI_DELAY)
 
 print(f"\n  ✅  Phase 1 complete  ({wordsapi_calls} WordsAPI calls this session)")
 
-# ── Phase 2: Enrich with Free Dictionary ──────────────────────────────────────
+# ── Phase 2: Select best 500 per level ────────────────────────────────────────
 
-print("\n── Phase 2: Enriching with Free Dictionary ──────────────────────────")
-print("   (fills missing examples, synonyms, and etymology)\n")
+print("\n── Phase 2: Selecting best 500 per level ────────────────────────────")
 
-all_words_flat = [
-    (word_key, level)
-    for level, words in collected.items()
-    for word_key in words
+# Bucket all scored (non-None) candidates by level.
+# Re-parse from the stored raw bodies so we always work from the full data.
+bucketed: dict[str, list] = {lvl: [] for lvl in LEVELS}
+for w, raw in scores_cache.items():
+    if raw is None:
+        continue
+    entry = parse_word_entry(raw)
+    if entry is None:
+        continue
+    z = entry["zipf"]
+    for lvl, bounds in LEVELS.items():
+        if bounds["min"] <= z <= bounds["max"]:
+            bucketed[lvl].append(entry)
+            break
+
+selected: dict[str, list] = {}
+for lvl in LEVELS:
+    pool = bucketed[lvl]
+    # Sort by Zipf descending: highest Zipf = most common = highest quality at level
+    pool.sort(key=lambda e: e["zipf"], reverse=True)
+    chosen = pool[:WORDS_PER_LEVEL]
+    selected[lvl] = chosen
+    status = "✅" if len(chosen) >= WORDS_PER_LEVEL else "⚠️ "
+    print(f"  {lvl:<15}  {len(pool):>4} in band  →  selected {len(chosen)}")
+    if len(chosen) < WORDS_PER_LEVEL:
+        print(f"    {status}  Only {len(chosen)} / {WORDS_PER_LEVEL} available — "
+              f"score more candidates to reach the target.")
+
+total_selected = sum(len(v) for v in selected.values())
+print(f"\n  Total selected: {total_selected} words")
+
+if total_selected == 0:
+    print("\n❌  No words selected. Run Phase 1 to score candidates first.")
+    sys.exit(1)
+
+# ── Phase 3: Enrich with Free Dictionary ──────────────────────────────────────
+
+print("\n── Phase 3: Enriching with Free Dictionary ──────────────────────────")
+print("   (adds examples, synonyms, and etymology from unlimited free API)\n")
+
+all_selected_words = [
+    (entry["word"].lower(), lvl)
+    for lvl, entries in selected.items()
+    for entry in entries
 ]
 
-to_enrich = [(k, lvl) for k, lvl in all_words_flat if k not in enrichment]
-print(f"  {len(all_words_flat) - len(to_enrich)} already enriched — skipping")
+to_enrich = [(w, lvl) for w, lvl in all_selected_words if w not in enrichment]
+print(f"  {len(all_selected_words) - len(to_enrich)} already enriched — skipping")
 print(f"  {len(to_enrich)} words to process\n")
 
 for i, (word_key, _) in enumerate(to_enrich):
-    entry    = collected[_][word_key]
-    needs_ex  = len(entry.get("examples", [])) < MAX_EXAMPLES
-    needs_syn = len(entry.get("synonyms", [])) < MAX_SYNONYMS
-    # Always fetch for origin; also fetch if examples or synonyms are short.
-    # Free Dictionary is unlimited so there's no cost to calling it every time.
-
     print(f"  [{i+1:>4}/{len(to_enrich)}]  {word_key:<22}", end=" ", flush=True)
     fd = fetch_free_dict(word_key)
     enrichment[word_key] = fd
     ENRICHMENT_CACHE.write_text(json.dumps(enrichment, indent=2, ensure_ascii=False))
 
     filled = []
-    if needs_ex  and fd["examples"]: filled.append("ex")
-    if needs_syn and fd["synonyms"]: filled.append("syn")
-    if fd["origin"]:                 filled.append("origin")
+    if fd["examples"]: filled.append("ex")
+    if fd["synonyms"]: filled.append("syn")
+    if fd["origin"]:   filled.append("origin")
     print("filled: " + ", ".join(filled) if filled else "no new data")
     time.sleep(FREEDICT_DELAY)
 
-print(f"\n  ✅  Phase 2 complete")
+print(f"\n  ✅  Phase 3 complete")
 
-# ── Phase 3: Merge and assemble final word list ───────────────────────────────
+# ── Phase 4: Merge and assemble final word list ───────────────────────────────
 
-print("\n── Phase 3: Assembling output ───────────────────────────────────────")
+print("\n── Phase 4: Assembling output ───────────────────────────────────────")
 
 output: list = []
 uid    = 0
@@ -403,12 +509,11 @@ stats  = {lvl: {"total": 0, "full_ex": 0, "full_syn": 0, "has_origin": 0}
           for lvl in LEVELS}
 
 for level in LEVELS:
-    for word_key, entry in collected[level].items():
+    for entry in selected[level]:
+        word_key = entry["word"].lower()
         fd = enrichment.get(word_key, {"examples": [], "synonyms": [], "origin": None})
 
         # ── Merge examples ────────────────────────────────────────────────────
-        # Combine both sources; keep up to MAX_EXAMPLES unique sentences.
-        # WordsAPI examples come first, Free Dictionary fills any remaining slots.
         seen_ex: set = set()
         final_examples: list[str] = []
         for ex in list(entry.get("examples") or []) + list(fd.get("examples") or []):
@@ -420,9 +525,6 @@ for level in LEVELS:
                 break
 
         # ── Merge synonyms ────────────────────────────────────────────────────
-        # Take every synonym from both APIs, deduplicate case-insensitively,
-        # and keep up to MAX_SYNONYMS.  If WordsAPI has 2 and Free Dict has 7,
-        # the result will have up to 9 unique synonyms (capped at MAX_SYNONYMS).
         seen_syn: set = set()
         final_synonyms: list[str] = []
         for s in list(entry.get("synonyms") or []) + list(fd.get("synonyms") or []):
@@ -433,13 +535,13 @@ for level in LEVELS:
             if len(final_synonyms) >= MAX_SYNONYMS:
                 break
 
-        origin = fd.get("origin")   # WordsAPI rarely carries etymology
+        origin = fd.get("origin")
 
         s = stats[level]
         s["total"] += 1
-        if len(final_examples) >= MAX_EXAMPLES: s["full_ex"]     += 1
-        if len(final_synonyms) >= 4:            s["full_syn"]    += 1
-        if origin:                              s["has_origin"]  += 1
+        if len(final_examples) >= MAX_EXAMPLES: s["full_ex"]    += 1
+        if len(final_synonyms) >= 4:            s["full_syn"]   += 1
+        if origin:                              s["has_origin"] += 1
 
         output.append({
             "id":           uid,
@@ -462,6 +564,9 @@ OUTPUT_FILE.write_text(json.dumps(output, indent=2, ensure_ascii=False))
 print(f"\n── Results ──────────────────────────────────────────────────────────")
 for lvl, s in stats.items():
     n = s["total"]
+    if n == 0:
+        print(f"\n  {lvl}  (0 words — need more scored candidates in this band)")
+        continue
     print(f"\n  {lvl}  ({n} words)")
     print(f"    2 examples : {s['full_ex']:>3} / {n}  ({s['full_ex']/n*100:.0f}%)")
     print(f"    4+ synonyms: {s['full_syn']:>3} / {n}  ({s['full_syn']/n*100:.0f}%)")
