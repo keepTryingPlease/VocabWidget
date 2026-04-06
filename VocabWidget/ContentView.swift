@@ -32,11 +32,14 @@ struct ContentView: View {
     /// ID of the word currently playing the inhale-to-mastered animation.
     @State private var masteringWordID:     Int?   = nil
 
+    // Words in zone-sorted order, mastered ones excluded.
+    // Recomputes whenever cycleOrder or masteredIDs changes (@Published on both).
     private var filteredWords: [VocabularyWord] {
-        let batchIDs = Set(scheduler.todaysBatch())
-        return VocabularyStore.words.filter {
-            batchIDs.contains($0.id)
-            && !library.masteredIDs.contains($0.id)
+        let masteredSet = library.masteredIDs
+        let idToWord    = Dictionary(uniqueKeysWithValues: VocabularyStore.words.map { ($0.id, $0) })
+        return scheduler.cycleOrder.compactMap {
+            guard !masteredSet.contains($0) else { return nil }
+            return idToWord[$0]
         }
     }
 
@@ -73,13 +76,12 @@ struct ContentView: View {
             .ignoresSafeArea()
             .navigationBarHidden(true)
             .onAppear {
-                scheduler.advanceIfNeeded(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
+                if scheduler.cycleOrder.isEmpty {
+                    scheduler.rebuild(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
+                }
                 if currentWordID == nil { currentWordID = filteredWords.first?.id }
             }
-            .onChange(of: currentWordID) { _, _ in
-                fetchingAudioForID = nil
-                extendBatchIfNearEnd()
-            }
+            .onChange(of: currentWordID) { _, _ in fetchingAudioForID = nil }
             .sheet(item: $selectedWord)        { WordDetailView(word: $0) }
             .sheet(item: $infoWord)            { WordInfoView(word: $0) }
             .sheet(isPresented: $showingLibrary) { LibraryView(library: library) }
@@ -126,34 +128,18 @@ struct ContentView: View {
         VStack(spacing: 0) {
             Spacer()
 
-            if hasUnmasteredWords {
-                // Batch exhausted — extendBatchIfNearEnd should prevent this in practice,
-                // but handle it gracefully by loading more immediately.
-                VStack(spacing: 16) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 48, weight: .light))
-                        .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
-                    Text("Loading more…")
-                        .font(.custom("PlayfairDisplay-Bold", size: 32))
-                        .foregroundStyle(Color.appPrimary)
-                }
-                .onAppear {
-                    scheduler.extendBatch(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
-                }
-            } else {
-                VStack(spacing: 16) {
-                    Image(systemName: "checkmark.seal.fill")
-                        .font(.system(size: 48, weight: .light))
-                        .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
-                    Text("All Words Mastered!")
-                        .font(.custom("PlayfairDisplay-Bold", size: 32))
-                        .foregroundStyle(Color.appPrimary)
-                    Text("You've mastered every word in the deck.\nCheck your Library to revisit them.")
-                        .font(.custom("Inter_18pt-Regular", size: 16))
-                        .foregroundStyle(Color.appSecondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                }
+            VStack(spacing: 16) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 48, weight: .light))
+                    .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
+                Text("All Words Mastered!")
+                    .font(.custom("PlayfairDisplay-Bold", size: 32))
+                    .foregroundStyle(Color.appPrimary)
+                Text("You've mastered every word in the deck.\nCheck your Library to revisit them.")
+                    .font(.custom("Inter_18pt-Regular", size: 16))
+                    .foregroundStyle(Color.appSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
             }
             Spacer()
         }
@@ -293,44 +279,33 @@ struct ContentView: View {
         .background(Color.appBackground)
     }
 
-    // ── Batch extension ───────────────────────────────────────────────────────
-    // Called whenever the current card changes. When the user is within 3 cards
-    // of the end of today's visible batch, silently extend it by another 50 so
-    // there's always something to scroll into — no empty-state wall.
-    private func extendBatchIfNearEnd() {
-        guard let currentID = currentWordID,
-              let idx = filteredWords.firstIndex(where: { $0.id == currentID }) else { return }
-        let distanceFromEnd = filteredWords.count - 1 - idx
-        if distanceFromEnd <= 2 {
-            scheduler.extendBatch(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
-        }
-    }
-
     // ── Mastered action ───────────────────────────────────────────────────────
     private func masteredAction(for word: VocabularyWord, proxy: ScrollViewProxy) {
         if library.isMastered(word) {
-            // Un-mastering from the deck — no animation needed.
+            // Un-mastering — flip it back and rebuild so it re-enters the deck.
             library.toggleMastered(word)
+            scheduler.rebuild(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
             return
         }
 
-        // Kick off the inhale animation on the card.
+        // Kick off the inhale animation.
         masteringWordID = word.id
 
-        // After the animation finishes (0.30 s) + small buffer:
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
-            // Advance to the next word so it's ready behind the vanished card.
+            // Scroll to the next card before the deck reorders.
             if let idx = filteredWords.firstIndex(where: { $0.id == word.id }),
                filteredWords.indices.contains(idx + 1) {
                 let nextID = filteredWords[idx + 1].id
                 proxy.scrollTo(nextID, anchor: .top)
                 currentWordID = nextID
             }
-            // Remove from deck + reset animation state.
+
+            // Mark mastered, then immediately rebuild the deck with the updated
+            // skill level so the next card is already calibrated.
             library.toggleMastered(word)
+            scheduler.rebuild(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
             masteringWordID = nil
 
-            // Fire milestone if applicable.
             if let hit = milestoneManager.milestone(forNewCount: library.masteredIDs.count) {
                 celebrationMilestone = hit
             }
