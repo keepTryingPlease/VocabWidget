@@ -27,20 +27,20 @@ struct ContentView: View {
     @State private var infoWord:            VocabularyWord? = nil
     @State private var collectionsWord:     VocabularyWord? = nil
     @State private var showingLibrary       = false
-    @State private var currentWordID:       Int?   = nil
+    @State private var currentCardID:       UUID?  = nil
     @State private var fetchingAudioForID:  Int?   = nil
-    /// ID of the word currently playing the inhale-to-mastered animation.
+    /// Word ID currently playing the inhale-to-mastered animation.
     @State private var masteringWordID:     Int?   = nil
 
-    // Words in zone-sorted order, mastered ones excluded.
-    // Recomputes whenever cycleOrder or masteredIDs changes (@Published on both).
-    private var filteredWords: [VocabularyWord] {
+    // Lookup table — built once per word bank load, reused everywhere.
+    private let idToWord: [Int: VocabularyWord] =
+        Dictionary(uniqueKeysWithValues: VocabularyStore.words.map { ($0.id, $0) })
+
+    // Deck cards with mastered words filtered out.
+    // Reacts to both scheduler.deck and library.masteredIDs (@Published on both).
+    private var filteredDeck: [DeckCard] {
         let masteredSet = library.masteredIDs
-        let idToWord    = Dictionary(uniqueKeysWithValues: VocabularyStore.words.map { ($0.id, $0) })
-        return scheduler.cycleOrder.compactMap {
-            guard !masteredSet.contains($0) else { return nil }
-            return idToWord[$0]
-        }
+        return scheduler.deck.filter { !masteredSet.contains($0.wordID) }
     }
 
     private var hasUnmasteredWords: Bool {
@@ -52,23 +52,25 @@ struct ContentView: View {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
 
-                if filteredWords.isEmpty {
+                if filteredDeck.isEmpty {
                     emptyStateView()
                 } else {
                     ScrollViewReader { proxy in
                         ScrollView(.vertical) {
                             LazyVStack(spacing: 0) {
-                                ForEach(filteredWords) { word in
-                                    wordPage(for: word, proxy: proxy)
-                                        .containerRelativeFrame([.horizontal, .vertical])
-                                        .id(word.id)
+                                ForEach(filteredDeck) { card in
+                                    if let word = idToWord[card.wordID] {
+                                        wordPage(for: word, cardID: card.id, proxy: proxy)
+                                            .containerRelativeFrame([.horizontal, .vertical])
+                                            .id(card.id)
+                                    }
                                 }
                             }
                             .scrollTargetLayout()
                         }
                         .scrollTargetBehavior(.paging)
                         .scrollIndicators(.hidden)
-                        .scrollPosition(id: $currentWordID)
+                        .scrollPosition(id: $currentCardID)
                         .ignoresSafeArea()
                     }
                 }
@@ -76,12 +78,23 @@ struct ContentView: View {
             .ignoresSafeArea()
             .navigationBarHidden(true)
             .onAppear {
-                if scheduler.cycleOrder.isEmpty {
-                    scheduler.rebuild(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
+                if scheduler.deck.isEmpty {
+                    scheduler.buildInitialDeck(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
                 }
-                if currentWordID == nil { currentWordID = filteredWords.first?.id }
+                if currentCardID == nil { currentCardID = filteredDeck.first?.id }
             }
-            .onChange(of: currentWordID) { _, _ in fetchingAudioForID = nil }
+            .onChange(of: currentCardID) { _, id in
+                fetchingAudioForID = nil
+                // When within 8 cards of the end, silently loop by appending a
+                // fresh zone-sorted pass at the current skill level.
+                guard let id,
+                      let idx = filteredDeck.firstIndex(where: { $0.id == id }) else { return }
+                scheduler.appendPassIfNeeded(
+                    currentIndex: idx,
+                    masteredIDs:  library.masteredIDs,
+                    userSkill:    library.userSkill
+                )
+            }
             .sheet(item: $selectedWord)        { WordDetailView(word: $0) }
             .sheet(item: $infoWord)            { WordInfoView(word: $0) }
             .sheet(isPresented: $showingLibrary) { LibraryView(library: library) }
@@ -151,7 +164,7 @@ struct ContentView: View {
     //   1. Card content  — animates (inhale) when mastered
     //   2. Action bar    — stays fixed so the mastered button is visible during the animation
     @ViewBuilder
-    private func wordPage(for word: VocabularyWord, proxy: ScrollViewProxy) -> some View {
+    private func wordPage(for word: VocabularyWord, cardID: UUID, proxy: ScrollViewProxy) -> some View {
         let isMastering = masteringWordID == word.id
         let mastered    = library.isMastered(word)
 
@@ -237,7 +250,7 @@ struct ContentView: View {
                 }
 
                 // ── Mastered button — inline so the icon can spring-pulse ──
-                Button { masteredAction(for: word, proxy: proxy) } label: {
+                Button { masteredAction(for: word, cardID: cardID, proxy: proxy) } label: {
                     VStack(spacing: 4) {
                         Image(systemName: mastered ? "checkmark.seal.fill" : "checkmark.seal")
                             .font(.system(size: 19))
@@ -280,31 +293,38 @@ struct ContentView: View {
     }
 
     // ── Mastered action ───────────────────────────────────────────────────────
-    private func masteredAction(for word: VocabularyWord, proxy: ScrollViewProxy) {
-        if library.isMastered(word) {
-            // Un-mastering — flip it back and rebuild so it re-enters the deck.
-            library.toggleMastered(word)
-            scheduler.rebuild(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
-            return
-        }
-
+    private func masteredAction(for word: VocabularyWord, cardID: UUID, proxy: ScrollViewProxy) {
         // Kick off the inhale animation.
         masteringWordID = word.id
 
+        // Capture the next card's UUID now, before anything changes.
+        let nextCardID: UUID? = {
+            guard let idx = filteredDeck.firstIndex(where: { $0.id == cardID }),
+                  filteredDeck.indices.contains(idx + 1) else { return nil }
+            return filteredDeck[idx + 1].id
+        }()
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
-            // Scroll to the next card before the deck reorders.
-            if let idx = filteredWords.firstIndex(where: { $0.id == word.id }),
-               filteredWords.indices.contains(idx + 1) {
-                let nextID = filteredWords[idx + 1].id
-                proxy.scrollTo(nextID, anchor: .top)
-                currentWordID = nextID
+            // Scroll to the next card.
+            if let next = nextCardID {
+                proxy.scrollTo(next, anchor: .top)
+                currentCardID = next
             }
 
-            // Mark mastered, then immediately rebuild the deck with the updated
-            // skill level so the next card is already calibrated.
+            // Mark mastered — filteredDeck automatically drops this word everywhere.
             library.toggleMastered(word)
-            scheduler.rebuild(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
             masteringWordID = nil
+
+            // Rebuild everything ahead of the current card using the updated skill
+            // level. The next card is already on screen; all cards after it get
+            // fresh zone-sorted calibration.
+            if let anchor = nextCardID {
+                scheduler.rebuildAhead(
+                    after:      anchor,
+                    masteredIDs: library.masteredIDs,
+                    userSkill:   library.userSkill
+                )
+            }
 
             if let hit = milestoneManager.milestone(forNewCount: library.masteredIDs.count) {
                 celebrationMilestone = hit
