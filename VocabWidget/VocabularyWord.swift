@@ -13,7 +13,8 @@ struct VocabularyWord: Identifiable, Codable {
     let examples: [String]     // up to 2 example sentences
     let synonyms: [String]     // up to 12 synonyms, merged from WordsAPI + Free Dictionary
     let origin: String?        // etymology, or nil if unavailable
-    let level: String          // "beginner", "intermediate", "advanced"
+    let frequency: Double      // Zipf score (1–7). Higher = more common/easier.
+                               // Typical vocab range: 2.0–5.0.
     let isFeatured: Bool       // true = eligible for lock screen word of the day
     let mastered: Bool         // true = hidden from the active deck
 }

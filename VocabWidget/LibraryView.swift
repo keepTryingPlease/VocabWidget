@@ -249,14 +249,7 @@ struct LibraryView: View {
                             .font(.custom("PlayfairDisplay-Bold", size: 17))
                             .foregroundStyle(Color.appPrimary)
                         Spacer()
-                        Text(word.level.capitalized)
-                            .font(.custom("Inter_18pt-Regular", size: 11))
-                            .foregroundStyle(Color.appSecondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Color.appPrimary.opacity(0.07))
-                            .clipShape(Capsule())
-                            .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.3), lineWidth: 0.5))
+                        frequencyBadge(word.frequency)
                     }
                     Text(word.definition)
                         .font(.custom("Inter_18pt-Regular", size: 13))
@@ -297,6 +290,20 @@ struct LibraryView: View {
             }
         }
         .padding(.vertical, 6)
+    }
+
+    /// Three dots whose fill conveys Zipf frequency: more filled = more common/easier.
+    /// Zipf ≥ 4.0 → 3 dots, 3.0–4.0 → 2 dots, < 3.0 → 1 dot.
+    @ViewBuilder
+    private func frequencyBadge(_ zipf: Double) -> some View {
+        let filled = zipf >= 4.0 ? 3 : zipf >= 3.0 ? 2 : 1
+        HStack(spacing: 3) {
+            ForEach(1...3, id: \.self) { i in
+                Circle()
+                    .fill(i <= filled ? Color.appSecondary : Color.appSecondary.opacity(0.2))
+                    .frame(width: 5, height: 5)
+            }
+        }
     }
 
     @ViewBuilder
@@ -357,14 +364,7 @@ struct CollectionDetailView: View {
                                         .font(.custom("PlayfairDisplay-Bold", size: 17))
                                         .foregroundStyle(Color.appPrimary)
                                     Spacer()
-                                    Text(word.level.capitalized)
-                                        .font(.custom("Inter_18pt-Regular", size: 11))
-                                        .foregroundStyle(Color.appSecondary)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(Color.appPrimary.opacity(0.07))
-                                        .clipShape(Capsule())
-                                        .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.3), lineWidth: 0.5))
+                                    frequencyBadge(word.frequency)
                                 }
                                 Text(word.definition)
                                     .font(.custom("Inter_18pt-Regular", size: 13))

@@ -27,34 +27,21 @@ struct ContentView: View {
     @State private var infoWord:            VocabularyWord? = nil
     @State private var collectionsWord:     VocabularyWord? = nil
     @State private var showingLibrary       = false
-    @State private var selectedLevel:       String = "beginner"
     @State private var currentWordID:       Int?   = nil
     @State private var fetchingAudioForID:  Int?   = nil
     /// ID of the word currently playing the inhale-to-mastered animation.
     @State private var masteringWordID:     Int?   = nil
 
     private var filteredWords: [VocabularyWord] {
-        let batchIDs = Set(scheduler.todaysBatch(for: selectedLevel))
+        let batchIDs = Set(scheduler.todaysBatch())
         return VocabularyStore.words.filter {
-            $0.level == selectedLevel
-            && batchIDs.contains($0.id)
+            batchIDs.contains($0.id)
             && !library.masteredIDs.contains($0.id)
         }
     }
 
-    private var hasUnmasteredWordsInLevel: Bool {
-        VocabularyStore.words.contains {
-            $0.level == selectedLevel && !library.masteredIDs.contains($0.id)
-        }
-    }
-
-    private var levelDisplayName: String {
-        switch selectedLevel {
-        case "beginner":     return "Beginner"
-        case "intermediate": return "Intermediate"
-        case "advanced":     return "Advanced"
-        default:             return selectedLevel.capitalized
-        }
+    private var hasUnmasteredWords: Bool {
+        VocabularyStore.words.contains { !library.masteredIDs.contains($0.id) }
     }
 
     var body: some View {
@@ -92,12 +79,8 @@ struct ContentView: View {
             .ignoresSafeArea()
             .navigationBarHidden(true)
             .onAppear {
-                scheduler.advanceIfNeeded(for: selectedLevel, masteredIDs: library.masteredIDs)
+                scheduler.advanceIfNeeded(masteredIDs: library.masteredIDs)
                 if currentWordID == nil { currentWordID = filteredWords.first?.id }
-            }
-            .onChange(of: selectedLevel) { _, level in
-                scheduler.advanceIfNeeded(for: level, masteredIDs: library.masteredIDs)
-                fetchingAudioForID = nil
             }
             .onChange(of: currentWordID) { _, _ in
                 fetchingAudioForID = nil
@@ -148,12 +131,10 @@ struct ContentView: View {
     private func emptyStateView() -> some View {
         VStack(spacing: 0) {
             Spacer()
-            levelPill().padding(.bottom, 24)
 
-            if hasUnmasteredWordsInLevel {
-                // This state is hit only if the last remaining words were all mastered
-                // simultaneously (e.g. rapid-fire mastering of the last card). In practice
-                // extendBatchIfNearEnd keeps loading more words before this is ever shown.
+            if hasUnmasteredWords {
+                // Batch exhausted — extendBatchIfNearEnd should prevent this in practice,
+                // but handle it gracefully by loading more immediately.
                 VStack(spacing: 16) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 48, weight: .light))
@@ -163,17 +144,17 @@ struct ContentView: View {
                         .foregroundStyle(Color.appPrimary)
                 }
                 .onAppear {
-                    scheduler.extendBatch(for: selectedLevel, masteredIDs: library.masteredIDs)
+                    scheduler.extendBatch(masteredIDs: library.masteredIDs)
                 }
             } else {
                 VStack(spacing: 16) {
                     Image(systemName: "checkmark.seal.fill")
                         .font(.system(size: 48, weight: .light))
                         .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
-                    Text("Level Complete")
+                    Text("All Words Mastered!")
                         .font(.custom("PlayfairDisplay-Bold", size: 32))
                         .foregroundStyle(Color.appPrimary)
-                    Text("You've mastered every \(levelDisplayName.lowercased()) word.\nSwitch levels or revisit words in your Library.")
+                    Text("You've mastered every word in the deck.\nCheck your Library to revisit them.")
                         .font(.custom("Inter_18pt-Regular", size: 16))
                         .foregroundStyle(Color.appSecondary)
                         .multilineTextAlignment(.center)
@@ -199,7 +180,6 @@ struct ContentView: View {
             // ── Card content (animated on master) ────────────────────────
             VStack(spacing: 0) {
                 Spacer()
-                levelPill().padding(.bottom, 24)
 
                 VStack(spacing: 16) {
                     Text(word.word)
@@ -328,7 +308,7 @@ struct ContentView: View {
               let idx = filteredWords.firstIndex(where: { $0.id == currentID }) else { return }
         let distanceFromEnd = filteredWords.count - 1 - idx
         if distanceFromEnd <= 2 {
-            scheduler.extendBatch(for: selectedLevel, masteredIDs: library.masteredIDs)
+            scheduler.extendBatch(masteredIDs: library.masteredIDs)
         }
     }
 
@@ -360,36 +340,6 @@ struct ContentView: View {
             if let hit = milestoneManager.milestone(forNewCount: library.masteredIDs.count) {
                 celebrationMilestone = hit
             }
-        }
-    }
-
-    // ── Level pill ────────────────────────────────────────────────────────────
-    @ViewBuilder
-    private func levelPill() -> some View {
-        Menu {
-            Button { selectedLevel = "beginner"     } label: {
-                Label("Beginner",     systemImage: selectedLevel == "beginner"     ? "checkmark" : "")
-            }
-            Button { selectedLevel = "intermediate" } label: {
-                Label("Intermediate", systemImage: selectedLevel == "intermediate" ? "checkmark" : "")
-            }
-            Button { selectedLevel = "advanced"     } label: {
-                Label("Advanced",     systemImage: selectedLevel == "advanced"     ? "checkmark" : "")
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Text(levelDisplayName)
-                    .font(.custom("Inter_18pt-Regular", size: 13))
-                    .foregroundStyle(Color.appPrimary)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.appSecondary)
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 9)
-            .background(Color.appPrimary.opacity(0.07))
-            .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.35), lineWidth: 1))
         }
     }
 

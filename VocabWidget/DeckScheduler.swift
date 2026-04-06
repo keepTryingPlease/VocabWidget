@@ -1,17 +1,10 @@
 // DeckScheduler.swift
 // Controls which 50 words appear in the swipe deck each day.
 //
-// How it works:
-//   • All unmastered words for a level are shuffled into a "cycle order"
-//     when the scheduler is first initialised for that level.
-//   • Each day, the scheduler advances to the next batch of 50 words
-//     in that order.
-//   • When the end of the order is reached, a new cycle begins: all
-//     currently-unmastered words are reshuffled so the user never sees
-//     the same sequence twice.
-//   • Mastered words are excluded at display time (via filteredWords in
-//     ContentView), but a new cycle also excludes them from the order
-//     so they don't reappear when the deck wraps.
+// Single-deck design — no levels. All unmastered words are shuffled into one
+// cycle order. Each day the next 50 advance into view. When the user reaches
+// the last few cards, extendBatch silently loads 50 more so scrolling never
+// hits a wall. A new calendar day resets to a fresh 50.
 //
 // State is persisted to UserDefaults and survives app restarts.
 
@@ -22,20 +15,19 @@ class DeckScheduler: ObservableObject {
 
     static let batchSize = 50
 
-    // Per-level state stored in UserDefaults.
-    private struct LevelState: Codable {
-        var cycleOrder:        [Int]    // word IDs in current shuffled cycle order
-        var batchStart:        Int      // start index of today's batch
-        var extraWords:        Int      // extra words unlocked beyond today's initial 50
-        var lastAdvancedDate:  String   // "yyyy-MM-dd"
+    private struct DeckState: Codable {
+        var cycleOrder:       [Int]   // word IDs in current shuffled cycle order
+        var batchStart:       Int     // start index of today's batch
+        var extraWords:       Int     // words added beyond today's initial 50
+        var lastAdvancedDate: String  // "yyyy-MM-dd"
 
-        // Backward-compatible decode: extraWords may be absent in existing saved state.
+        // Backward-compatible: extraWords may be absent in older saved data.
         init(from decoder: Decoder) throws {
             let c            = try decoder.container(keyedBy: CodingKeys.self)
-            cycleOrder       = try c.decode([Int].self,    forKey: .cycleOrder)
-            batchStart       = try c.decode(Int.self,      forKey: .batchStart)
-            extraWords       = (try? c.decode(Int.self,    forKey: .extraWords)) ?? 0
-            lastAdvancedDate = try c.decode(String.self,   forKey: .lastAdvancedDate)
+            cycleOrder       = try c.decode([Int].self,   forKey: .cycleOrder)
+            batchStart       = try c.decode(Int.self,     forKey: .batchStart)
+            extraWords       = (try? c.decode(Int.self,   forKey: .extraWords)) ?? 0
+            lastAdvancedDate = try c.decode(String.self,  forKey: .lastAdvancedDate)
         }
 
         init(cycleOrder: [Int], batchStart: Int, extraWords: Int, lastAdvancedDate: String) {
@@ -46,88 +38,72 @@ class DeckScheduler: ObservableObject {
         }
     }
 
-    @Published private var states: [String: LevelState]
+    @Published private var state: DeckState?
 
-    private let storageKey = "deckSchedulerState"
+    private let storageKey = "deckSchedulerState_v2"
 
     init() {
-        if let data    = UserDefaults.standard.data(forKey: "deckSchedulerState"),
-           let decoded = try? JSONDecoder().decode([String: LevelState].self, from: data) {
-            states = decoded
-        } else {
-            states = [:]
+        if let data    = UserDefaults.standard.data(forKey: storageKey),
+           let decoded = try? JSONDecoder().decode(DeckState.self, from: data) {
+            state = decoded
         }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    /// Returns today's batch of word IDs for the given level (initial 50 + any live extensions).
-    /// Always call advanceIfNeeded first to ensure the state is current.
-    func todaysBatch(for level: String) -> [Int] {
-        guard let state = states[level],
-              state.batchStart < state.cycleOrder.count else { return [] }
-        let end = min(state.batchStart + Self.batchSize + state.extraWords, state.cycleOrder.count)
-        return Array(state.cycleOrder[state.batchStart..<end])
+    /// Returns today's batch of word IDs (initial 50 + any live extensions).
+    /// Call advanceIfNeeded first to ensure the state is current.
+    func todaysBatch() -> [Int] {
+        guard let s = state, s.batchStart < s.cycleOrder.count else { return [] }
+        let end = min(s.batchStart + Self.batchSize + s.extraWords, s.cycleOrder.count)
+        return Array(s.cycleOrder[s.batchStart..<end])
     }
 
-    /// Appends the next 50 unmastered words to today's visible batch so the
-    /// user can keep scrolling without hitting an empty state.
-    /// Safe to call multiple times — each call unlocks one more batch of 50.
-    func extendBatch(for level: String, masteredIDs: Set<Int>) {
-        guard var state = states[level] else { return }
-        let currentEnd = state.batchStart + Self.batchSize + state.extraWords
-        if currentEnd >= state.cycleOrder.count {
-            // Reached the end of the full cycle — start a fresh cycle.
-            state.cycleOrder     = buildCycleOrder(for: level, masteredIDs: masteredIDs)
-            state.batchStart     = 0
-            state.extraWords     = 0
-            // Keep lastAdvancedDate so a date change still triggers the normal advance tomorrow.
+    /// Advances to the next batch if the date has changed, or initialises on
+    /// first launch. Pass current mastered IDs so new cycles exclude them.
+    func advanceIfNeeded(masteredIDs: Set<Int>) {
+        let today = Self.todayString()
+
+        if var s = state {
+            guard s.lastAdvancedDate != today else { return }
+            let nextStart = s.batchStart + Self.batchSize + s.extraWords
+            if nextStart >= s.cycleOrder.count {
+                state = buildFreshCycle(masteredIDs: masteredIDs)
+            } else {
+                s.batchStart       = nextStart
+                s.extraWords       = 0
+                s.lastAdvancedDate = today
+                state              = s
+            }
         } else {
-            state.extraWords += Self.batchSize
+            state = buildFreshCycle(masteredIDs: masteredIDs)
         }
-        states[level] = state
         save()
     }
 
-    /// Advances to the next batch if the calendar date has changed since the
-    /// last advance, or initialises the level if it has never been scheduled.
-    /// Pass the current set of mastered IDs so new cycles exclude them.
-    func advanceIfNeeded(for level: String, masteredIDs: Set<Int>) {
-        let today = Self.todayString()
-
-        if var state = states[level] {
-            guard state.lastAdvancedDate != today else { return }
-
-            let nextStart = state.batchStart + Self.batchSize + state.extraWords
-            if nextStart >= state.cycleOrder.count {
-                // Reached the end of the cycle — rebuild with a fresh shuffle
-                states[level] = buildCycle(for: level, masteredIDs: masteredIDs)
-            } else {
-                state.batchStart       = nextStart
-                state.extraWords       = 0          // reset extensions at the daily boundary
-                state.lastAdvancedDate = today
-                states[level]          = state
-            }
+    /// Appends the next 50 unmastered words to today's visible batch.
+    /// Called automatically when the user is within 3 cards of the end.
+    func extendBatch(masteredIDs: Set<Int>) {
+        guard var s = state else { return }
+        let currentEnd = s.batchStart + Self.batchSize + s.extraWords
+        if currentEnd >= s.cycleOrder.count {
+            state = buildFreshCycle(masteredIDs: masteredIDs)
         } else {
-            // First time this level has been scheduled
-            states[level] = buildCycle(for: level, masteredIDs: masteredIDs)
+            s.extraWords += Self.batchSize
+            state         = s
         }
-
         save()
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    private func buildCycleOrder(for level: String, masteredIDs: Set<Int>) -> [Int] {
-        VocabularyStore.words
-            .filter { $0.level == level && !masteredIDs.contains($0.id) }
+    private func buildFreshCycle(masteredIDs: Set<Int>) -> DeckState {
+        let order = VocabularyStore.words
+            .filter { !masteredIDs.contains($0.id) }
             .map    { $0.id }
             .shuffled()
-    }
-
-    private func buildCycle(for level: String, masteredIDs: Set<Int>) -> LevelState {
-        LevelState(
-            cycleOrder:       buildCycleOrder(for: level, masteredIDs: masteredIDs),
+        return DeckState(
+            cycleOrder:       order,
             batchStart:       0,
             extraWords:       0,
             lastAdvancedDate: Self.todayString()
@@ -142,7 +118,7 @@ class DeckScheduler: ObservableObject {
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(states) {
+        if let data = try? JSONEncoder().encode(state) {
             UserDefaults.standard.set(data, forKey: storageKey)
         }
     }
