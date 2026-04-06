@@ -67,19 +67,13 @@ struct ContentView: View {
                         .scrollIndicators(.hidden)
                         .scrollPosition(id: $currentWordID)
                         .ignoresSafeArea()
-                        .onChange(of: selectedLevel) { _, _ in
-                            if let first = filteredWords.first {
-                                proxy.scrollTo(first.id, anchor: .top)
-                                currentWordID = first.id
-                            }
-                        }
                     }
                 }
             }
             .ignoresSafeArea()
             .navigationBarHidden(true)
             .onAppear {
-                scheduler.advanceIfNeeded(masteredIDs: library.masteredIDs)
+                scheduler.advanceIfNeeded(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
                 if currentWordID == nil { currentWordID = filteredWords.first?.id }
             }
             .onChange(of: currentWordID) { _, _ in
@@ -144,7 +138,7 @@ struct ContentView: View {
                         .foregroundStyle(Color.appPrimary)
                 }
                 .onAppear {
-                    scheduler.extendBatch(masteredIDs: library.masteredIDs)
+                    scheduler.extendBatch(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
                 }
             } else {
                 VStack(spacing: 16) {
@@ -308,7 +302,7 @@ struct ContentView: View {
               let idx = filteredWords.firstIndex(where: { $0.id == currentID }) else { return }
         let distanceFromEnd = filteredWords.count - 1 - idx
         if distanceFromEnd <= 2 {
-            scheduler.extendBatch(masteredIDs: library.masteredIDs)
+            scheduler.extendBatch(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
         }
     }
 

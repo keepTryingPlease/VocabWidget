@@ -62,6 +62,16 @@ class UserLibrary: ObservableObject {
         VocabularyStore.words.filter { masteredIDs.contains($0.id) }.sorted { $0.word < $1.word }
     }
 
+    /// Estimated skill level as a Zipf score (1–7, higher = more common/easier).
+    /// Computed as the mean frequency of all mastered words.
+    /// Defaults to 4.5 when no words have been mastered yet — this puts new
+    /// users into the mid-range vocabulary tier to start.
+    var userSkill: Double {
+        let mastered = masteredWords
+        guard !mastered.isEmpty else { return 4.5 }
+        return mastered.map(\.frequency).reduce(0, +) / Double(mastered.count)
+    }
+
     func toggleLike(_ word: VocabularyWord) {
         if likedIDs.contains(word.id) { likedIDs.remove(word.id) }
         else                          { likedIDs.insert(word.id) }
