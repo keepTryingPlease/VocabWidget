@@ -108,11 +108,9 @@ struct ContentView: View {
         return (filteredDeck[idx + 1], word)
     }
 
-    /// 0 → 1 as drag crosses the dismiss threshold.
+    /// 0 → 1 as horizontal drag crosses the dismiss threshold.
     private var dragProgress: Double {
-        let h = abs(dragOffset.width)
-        let v = max(-dragOffset.height, 0)       // only upward counts
-        return min(max(h, v) / 110.0, 1.0)
+        min(abs(dragOffset.width) / 110.0, 1.0)
     }
 
     private var cardRotation: Double {
@@ -333,8 +331,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private func swipeOverlay() -> some View {
-        let hProgress = min(abs(dragOffset.width) / 110.0, 1.0)
-        let vProgress = min(max(-dragOffset.height, 0) / 110.0, 1.0)
+        let progress = min(abs(dragOffset.width) / 110.0, 1.0)
 
         ZStack(alignment: .topLeading) {
             if dragOffset.width > 5 {
@@ -348,7 +345,7 @@ struct ContentView: View {
                     }
                     Spacer()
                 }
-                .opacity(hProgress)
+                .opacity(progress)
 
             } else if dragOffset.width < -5 {
                 // NOPE — left
@@ -361,21 +358,7 @@ struct ContentView: View {
                     }
                     Spacer()
                 }
-                .opacity(hProgress)
-
-            } else if dragOffset.height < -5 {
-                // SKIP — up
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        swipeLabel("SKIP", color: Color(red: 0.95, green: 0.78, blue: 0.35),
-                                   rotation: 0)
-                        Spacer()
-                    }
-                    Spacer()
-                }
-                .opacity(vProgress)
+                .opacity(progress)
             }
         }
     }
@@ -396,24 +379,17 @@ struct ContentView: View {
         DragGesture(minimumDistance: 8)
             .onChanged { value in
                 guard !isDismissing, masteringWordID == nil else { return }
-                dragOffset = value.translation
+                // Only track horizontal movement; ignore vertical drag.
+                dragOffset = CGSize(width: value.translation.width, height: 0)
             }
             .onEnded { value in
                 guard !isDismissing, masteringWordID == nil else { return }
                 let dx = value.translation.width
-                let dy = value.translation.height
-                let absH = abs(dx)
-                let absV = abs(dy)
-
-                if absH > 110 && absH >= absV {
-                    // Horizontal swipe wins
-                    if dx > 0 { flyOff(to: .right, word: word, cardID: cardID) }
-                    else      { flyOff(to: .left,  word: word, cardID: cardID) }
-                } else if dy < -110 && absV > absH {
-                    // Upward swipe — skip
-                    flyOff(to: .up, word: word, cardID: cardID)
+                if dx > 110 {
+                    flyOff(to: .right, word: word, cardID: cardID)
+                } else if dx < -110 {
+                    flyOff(to: .left, word: word, cardID: cardID)
                 } else {
-                    // Snap back
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                         dragOffset = .zero
                     }
@@ -421,29 +397,31 @@ struct ContentView: View {
             }
     }
 
-    private enum SwipeDirection { case left, right, up }
+    private enum SwipeDirection { case left, right }
 
     private func flyOff(to direction: SwipeDirection, word: VocabularyWord, cardID: UUID) {
         isDismissing = true
-        let target: CGSize
-        switch direction {
-        case .right: target = CGSize(width:  700, height:  0)
-        case .left:  target = CGSize(width: -700, height:  0)
-        case .up:    target = CGSize(width:    0, height: -700)
-        }
 
+        // Capture next card ID NOW — before any state mutation changes filteredDeck.
+        let nextID: UUID? = {
+            guard let idx = filteredDeck.firstIndex(where: { $0.id == cardID }),
+                  filteredDeck.indices.contains(idx + 1)
+            else { return nil }
+            return filteredDeck[idx + 1].id
+        }()
+
+        let target = CGSize(width: direction == .right ? 700 : -700, height: 0)
         withAnimation(.easeIn(duration: 0.22)) { dragOffset = target }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            // Perform the action
             switch direction {
             case .right: library.toggleSaved(word)
             case .left:  library.disregard(word)
-            case .up:    break   // skip — no state change
             }
-            advance(from: cardID)
-            dragOffset   = .zero
-            isDismissing = false
+            // Use the pre-captured ID — filteredDeck may have changed by now.
+            currentCardID = nextID ?? filteredDeck.first?.id
+            dragOffset    = .zero
+            isDismissing  = false
         }
     }
 
@@ -467,18 +445,6 @@ struct ContentView: View {
                 celebrationMilestone = hit
             }
         }
-    }
-
-    // ── Navigation helpers ────────────────────────────────────────────────────
-
-    private func advance(from cardID: UUID) {
-        guard let idx = filteredDeck.firstIndex(where: { $0.id == cardID }),
-              filteredDeck.indices.contains(idx + 1)
-        else {
-            currentCardID = filteredDeck.first?.id
-            return
-        }
-        currentCardID = filteredDeck[idx + 1].id
     }
 
     // ── Empty state ───────────────────────────────────────────────────────────
