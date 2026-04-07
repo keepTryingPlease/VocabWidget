@@ -281,7 +281,11 @@ struct ContentView: View {
                     label: "Like",
                     color: library.isLiked(word)
                         ? Color(red: 0.95, green: 0.35, blue: 0.35) : Color.appSecondary
-                ) { likeWord = word }
+                ) {
+                    // Like immediately so the sheet opens with it already checked.
+                    if !library.isLiked(word) { library.toggleLike(word) }
+                    likeWord = word
+                }
 
                 Button { masteredAction(for: word, cardID: cardID) } label: {
                     VStack(spacing: 4) {
@@ -335,11 +339,11 @@ struct ContentView: View {
 
         ZStack(alignment: .topLeading) {
             if dragOffset.width > 5 {
-                // SAVE — right
+                // LIKE — right
                 VStack {
                     HStack {
                         Spacer()
-                        swipeLabel("SAVE", color: Color(red: 0.35, green: 0.85, blue: 0.55),
+                        swipeLabel("LIKE", color: Color(red: 0.95, green: 0.35, blue: 0.35),
                                    rotation: -14)
                             .padding(.top, 100).padding(.trailing, 36)
                     }
@@ -415,7 +419,7 @@ struct ContentView: View {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             switch direction {
-            case .right: library.toggleSaved(word)
+            case .right: library.toggleLike(word)
             case .left:  library.disregard(word)
             }
             // Use the pre-captured ID — filteredDeck may have changed by now.

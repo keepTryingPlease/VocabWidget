@@ -9,14 +9,12 @@ class UserLibrary: ObservableObject {
 
     @Published private(set) var likedIDs:        Set<Int>
     @Published private(set) var masteredIDs:     Set<Int>
-    @Published private(set) var savedIDs:        Set<Int>   // swipe-right "want to learn"
     @Published private(set) var disregardedIDs:  Set<Int>   // swipe-left, never shown again
     @Published private(set) var collections:     [String: Set<Int>]
 
     private enum Keys {
         static let liked        = "likedWordIDs"
         static let mastered     = "masteredWordIDs"
-        static let saved        = "savedWordIDs"
         static let disregarded  = "disregardedWordIDs"
         static let collections  = "wordCollections"
         static let fingerprint  = "wordBankFingerprint"
@@ -28,13 +26,12 @@ class UserLibrary: ObservableObject {
     init() {
         // ── DEV: wipe all state on every launch so testing always starts fresh ─
         #if DEBUG
-        for key in [Keys.liked, Keys.mastered, Keys.saved, Keys.disregarded,
+        for key in [Keys.liked, Keys.mastered, Keys.disregarded,
                     Keys.collections, Keys.scheduler, Keys.milestones, Keys.fingerprint] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         likedIDs       = []
         masteredIDs    = []
-        savedIDs       = []
         disregardedIDs = []
         collections    = [:]
         UserDefaults.standard.set(VocabularyStore.fingerprint, forKey: Keys.fingerprint)
@@ -44,14 +41,13 @@ class UserLibrary: ObservableObject {
         // ── Word bank change detection ────────────────────────────────────────
         let storedFingerprint = UserDefaults.standard.string(forKey: Keys.fingerprint)
         if storedFingerprint != VocabularyStore.fingerprint {
-            for key in [Keys.liked, Keys.mastered, Keys.saved, Keys.disregarded,
+            for key in [Keys.liked, Keys.mastered, Keys.disregarded,
                         Keys.collections, Keys.scheduler, Keys.milestones] {
                 UserDefaults.standard.removeObject(forKey: key)
             }
             UserDefaults.standard.set(VocabularyStore.fingerprint, forKey: Keys.fingerprint)
             likedIDs       = []
             masteredIDs    = []
-            savedIDs       = []
             disregardedIDs = []
             collections    = [:]
             return
@@ -60,11 +56,9 @@ class UserLibrary: ObservableObject {
         // ── Normal load ───────────────────────────────────────────────────────
         let liked       = UserDefaults.standard.array(forKey: Keys.liked)       as? [Int] ?? []
         let mastered    = UserDefaults.standard.array(forKey: Keys.mastered)    as? [Int] ?? []
-        let saved       = UserDefaults.standard.array(forKey: Keys.saved)       as? [Int] ?? []
         let disregarded = UserDefaults.standard.array(forKey: Keys.disregarded) as? [Int] ?? []
         likedIDs       = Set(liked)
         masteredIDs    = Set(mastered)
-        savedIDs       = Set(saved)
         disregardedIDs = Set(disregarded)
 
         let raw = UserDefaults.standard.dictionary(forKey: Keys.collections) as? [String: [Int]] ?? [:]
@@ -97,20 +91,6 @@ class UserLibrary: ObservableObject {
         if masteredIDs.contains(word.id) { masteredIDs.remove(word.id) }
         else                             { masteredIDs.insert(word.id) }
         UserDefaults.standard.set(Array(masteredIDs), forKey: Keys.mastered)
-    }
-
-    // ── Saved (swipe right — "want to learn") ────────────────────────────────
-
-    func isSaved(_ word: VocabularyWord) -> Bool { savedIDs.contains(word.id) }
-
-    var savedWords: [VocabularyWord] {
-        VocabularyStore.words.filter { savedIDs.contains($0.id) }.sorted { $0.word < $1.word }
-    }
-
-    func toggleSaved(_ word: VocabularyWord) {
-        if savedIDs.contains(word.id) { savedIDs.remove(word.id) }
-        else                          { savedIDs.insert(word.id) }
-        UserDefaults.standard.set(Array(savedIDs), forKey: Keys.saved)
     }
 
     // ── Disregarded (swipe left — hidden forever) ─────────────────────────────
@@ -162,8 +142,8 @@ class UserLibrary: ObservableObject {
 
     // ── Export helpers ────────────────────────────────────────────────────────
 
-    /// Plain-text word list — one word per line, for pasting into words_to_add.txt.
-    var savedExportText: String {
-        savedWords.map(\.word).joined(separator: "\n")
+    /// Plain-text liked word list — one word per line, for pasting into words_to_add.txt.
+    var likedExportText: String {
+        likedWords.map(\.word).joined(separator: "\n")
     }
 }
