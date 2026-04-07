@@ -352,35 +352,19 @@ struct LibraryView: View {
             }
             .buttonStyle(.plain)
 
-            HStack(spacing: 18) {
-                Button { library.toggleLike(word) } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: library.isLiked(word) ? "heart.fill" : "heart")
-                        Text("Like")
-                    }
-                    .font(.system(size: 13))
-                    .foregroundStyle(
-                        library.isLiked(word)
-                            ? Color(red: 0.95, green: 0.35, blue: 0.35)
-                            : Color.appSecondary
-                    )
+            Button { library.toggleMastered(word) } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: library.isMastered(word) ? "checkmark.seal.fill" : "checkmark.seal")
+                    Text("Mastered")
                 }
-                .buttonStyle(.plain)
-
-                Button { library.toggleMastered(word) } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: library.isMastered(word) ? "checkmark.seal.fill" : "checkmark.seal")
-                        Text("Mastered")
-                    }
-                    .font(.system(size: 13))
-                    .foregroundStyle(
-                        library.isMastered(word)
-                            ? Color(red: 0.35, green: 0.85, blue: 0.55)
-                            : Color.appSecondary
-                    )
-                }
-                .buttonStyle(.plain)
+                .font(.system(size: 13))
+                .foregroundStyle(
+                    library.isMastered(word)
+                        ? Color(red: 0.35, green: 0.85, blue: 0.55)
+                        : Color.appSecondary
+                )
             }
+            .buttonStyle(.plain)
         }
         .padding(.vertical, 6)
     }
@@ -425,7 +409,7 @@ struct CollectionDetailView: View {
                     Text("No words yet.")
                         .font(.custom("PlayfairDisplay-Bold", size: 18))
                         .foregroundStyle(Color.appPrimary)
-                    Text("Add words using the ♡ Like button\non any card.")
+                    Text("Swipe right on any card to add words here.")
                         .font(.custom("Inter_18pt-Regular", size: 15))
                         .foregroundStyle(Color.appSecondary)
                         .multilineTextAlignment(.center)
@@ -453,20 +437,6 @@ struct CollectionDetailView: View {
                         .buttonStyle(.plain)
 
                         HStack(spacing: 18) {
-                            Button { library.toggleLike(word) } label: {
-                                HStack(spacing: 5) {
-                                    Image(systemName: library.isLiked(word) ? "heart.fill" : "heart")
-                                    Text("Like")
-                                }
-                                .font(.system(size: 13))
-                                .foregroundStyle(
-                                    library.isLiked(word)
-                                        ? Color(red: 0.95, green: 0.35, blue: 0.35)
-                                        : Color(red: 0.55, green: 0.54, blue: 0.52)
-                                )
-                            }
-                            .buttonStyle(.plain)
-
                             Button { library.toggleMastered(word) } label: {
                                 HStack(spacing: 5) {
                                     Image(systemName: library.isMastered(word) ? "checkmark.seal.fill" : "checkmark.seal")
@@ -553,13 +523,6 @@ struct LikedWordsDetailView: View {
                     .padding(.vertical, 6)
                     .listRowBackground(Color(red: 0.14, green: 0.14, blue: 0.15))
                     .listRowSeparatorTint(Color(red: 0.55, green: 0.54, blue: 0.52).opacity(0.2))
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            library.toggleLike(word)
-                        } label: {
-                            Label("Unlike", systemImage: "heart.slash")
-                        }
-                    }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
