@@ -29,32 +29,31 @@ private extension Double {
 // ── Rarity level ──────────────────────────────────────────────────────────────
 
 private enum RarityLevel {
-    case obscure, rare, uncommon, advanced
+    case obscure, uncommon, common
 
-    init(zipf: Double) {
+    /// Returns nil for advanced words (Zipf ≥ 4.0) — badge not shown.
+    init?(zipf: Double) {
         switch zipf {
-        case ..<2.0:     self = .obscure
-        case 2.0..<3.0:  self = .rare
-        case 3.0..<4.0:  self = .uncommon
-        default:         self = .advanced
+        case ..<1.8:     self = .obscure
+        case 1.8..<3.0:  self = .uncommon
+        case 3.0..<4.0:  self = .common
+        default:         return nil   // advanced — no badge
         }
     }
 
     var label: String {
         switch self {
         case .obscure:  return "Obscure"
-        case .rare:     return "Rare"
         case .uncommon: return "Uncommon"
-        case .advanced: return "Advanced"
+        case .common:   return "Common"
         }
     }
 
     var color: Color {
         switch self {
         case .obscure:  return Color(red: 0.65, green: 0.45, blue: 0.90)
-        case .rare:     return Color(red: 0.40, green: 0.65, blue: 0.95)
-        case .uncommon: return Color(red: 0.35, green: 0.80, blue: 0.75)
-        case .advanced: return Color(red: 0.45, green: 0.85, blue: 0.55)
+        case .uncommon: return Color(red: 0.40, green: 0.65, blue: 0.95)
+        case .common:   return Color(red: 0.35, green: 0.80, blue: 0.75)
         }
     }
 }
@@ -207,7 +206,7 @@ struct ContentView: View {
     private func cardFace(for word: VocabularyWord, cardID: UUID, size: CGSize) -> some View {
         let isMastering = masteringWordID == word.id
         let mastered    = library.isMastered(word)
-        let rarity      = RarityLevel(zipf: word.frequency)
+        let rarity      = RarityLevel(zipf: word.frequency)   // nil = advanced, badge hidden
 
         ZStack(alignment: .bottom) {
 
@@ -222,7 +221,7 @@ struct ContentView: View {
                             .foregroundStyle(Color.appPrimary)
                             .multilineTextAlignment(.center)
 
-                        rarityBadge(rarity)
+                        if let rarity { rarityBadge(rarity) }
                     }
 
                     Divider()
