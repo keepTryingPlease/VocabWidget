@@ -70,6 +70,7 @@ struct ContentView: View {
     @State private var celebrationMilestone: Milestone?     = nil
     @State private var showingMilestones    = false
     @State private var infoWord:            VocabularyWord? = nil
+    @State private var collectionsWord:     VocabularyWord? = nil
     @State private var selectedWord:        VocabularyWord? = nil   // widget deep-link
     @State private var showingLibrary       = false
     @State private var currentCardID:       UUID?           = nil
@@ -152,6 +153,7 @@ struct ContentView: View {
                 )
             }
             .sheet(item: $infoWord)          { WordInfoView(word: $0) }
+            .sheet(item: $collectionsWord)   { LibraryView(library: library, initialTab: .collections, targetWord: $0) }
             .sheet(item: $selectedWord)      { WordDetailView(word: $0) }
             .sheet(isPresented: $showingLibrary)    { LibraryView(library: library) }
             .sheet(item: $celebrationMilestone)     { MilestoneCelebrationView(milestone: $0) }
@@ -272,6 +274,8 @@ struct ContentView: View {
             // ── Action bar ────────────────────────────────────────────────
             HStack(spacing: 0) {
                 actionButton(icon: "info.circle", label: "Info") { infoWord = word }
+
+                actionButton(icon: "square.stack", label: "Collections") { collectionsWord = word }
 
                 Button { masteredAction(for: word, cardID: cardID) } label: {
                     VStack(spacing: 4) {

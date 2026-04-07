@@ -99,7 +99,11 @@ struct LibraryView: View {
                         emptyHint:    "Tap ✓ when you know a word cold."
                     )
                 case .collections:
-                    collectionsTab()
+                    if let word = targetWord {
+                        collectionsPickerTab(word: word)
+                    } else {
+                        collectionsTab()
+                    }
                 }
             }
             .background(Color.appBackground)
@@ -111,7 +115,7 @@ struct LibraryView: View {
                     Button("Done") { dismiss() }
                         .foregroundStyle(Color.appPrimary)
                 }
-                if selectedTab == .collections && targetWord == nil {
+                if selectedTab == .collections {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
                             newCollectionName = ""
@@ -140,6 +144,7 @@ struct LibraryView: View {
                     let name = newCollectionName.trimmingCharacters(in: .whitespaces)
                     guard !name.isEmpty else { return }
                     library.createCollection(name)
+                    if let word = targetWord { library.toggleWord(word, inCollection: name) }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -234,62 +239,66 @@ struct LibraryView: View {
 
     // ── Collections tab ───────────────────────────────────────────────────────
 
-    @ViewBuilder
-    private func collectionsTab() -> some View {
-        List {
-            // ── Hardcoded Liked row (always first) ────────────────────────
-            Section {
-                NavigationLink {
-                    LikedWordsDetailView(library: library)
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "heart.fill")
-                            .font(.system(size: 15))
-                            .foregroundStyle(Color(red: 0.95, green: 0.35, blue: 0.35))
-                            .frame(width: 22)
-                        Text("Liked")
-                            .font(.custom("Inter_18pt-Regular", size: 17))
-                            .foregroundStyle(Color.appPrimary)
-                        Spacer()
-                        Text("\(library.likedWords.count)")
-                            .font(.custom("Inter_18pt-Regular", size: 13))
-                            .foregroundStyle(Color.appSecondary)
-                    }
-                    .padding(.vertical, 4)
-                }
-                .listRowBackground(Color(red: 0.95, green: 0.35, blue: 0.35).opacity(0.06))
-                .listRowSeparatorTint(Color.appSecondary.opacity(0.2))
-            }
+    // ── Collections picker (opened from Collections button on a card) ─────────
 
-            // ── User collections ──────────────────────────────────────────
-            if !library.collectionNames.isEmpty {
-                Section {
-                    ForEach(library.collectionNames, id: \.self) { name in
-                        NavigationLink {
-                            CollectionDetailView(name: name, library: library)
-                        } label: {
-                            HStack {
-                                Text(name)
-                                    .font(.custom("Inter_18pt-Regular", size: 17))
-                                    .foregroundStyle(Color.appPrimary)
-                                Spacer()
-                                Text("\(library.words(inCollection: name).count)")
-                                    .font(.custom("Inter_18pt-Regular", size: 13))
-                                    .foregroundStyle(Color.appSecondary)
-                            }
-                            .padding(.vertical, 4)
-                        }
+    @ViewBuilder
+    private func collectionsPickerTab(word: VocabularyWord) -> some View {
+        if library.collectionNames.isEmpty {
+            emptyState(
+                icon:    "square.stack",
+                message: "No collections yet.",
+                hint:    "Tap + to create one."
+            )
+        } else {
+            List {
+                ForEach(library.collectionNames, id: \.self) { name in
+                    collectionToggleRow(name: name, word: word)
                         .listRowBackground(Color.appBackground)
                         .listRowSeparatorTint(Color.appSecondary.opacity(0.2))
-                    }
-                    .onDelete { offsets in
-                        offsets.forEach { i in library.deleteCollection(library.collectionNames[i]) }
-                    }
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
+    }
+
+    // ── Collections browse (normal Library view) ──────────────────────────────
+
+    @ViewBuilder
+    private func collectionsTab() -> some View {
+        if library.collectionNames.isEmpty {
+            emptyState(
+                icon:    "square.stack",
+                message: "No collections yet.",
+                hint:    "Tap + to create one."
+            )
+        } else {
+            List {
+                ForEach(library.collectionNames, id: \.self) { name in
+                    NavigationLink {
+                        CollectionDetailView(name: name, library: library)
+                    } label: {
+                        HStack {
+                            Text(name)
+                                .font(.custom("Inter_18pt-Regular", size: 17))
+                                .foregroundStyle(Color.appPrimary)
+                            Spacer()
+                            Text("\(library.words(inCollection: name).count)")
+                                .font(.custom("Inter_18pt-Regular", size: 13))
+                                .foregroundStyle(Color.appSecondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .listRowBackground(Color.appBackground)
+                    .listRowSeparatorTint(Color.appSecondary.opacity(0.2))
+                }
+                .onDelete { offsets in
+                    offsets.forEach { i in library.deleteCollection(library.collectionNames[i]) }
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        }
     }
 
     @ViewBuilder
