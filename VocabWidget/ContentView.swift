@@ -1,10 +1,16 @@
 // ContentView.swift
-// Main screen — vertical paging deck with horizontal swipe-to-curate gestures.
 //
-// Swipe RIGHT → Save word to "Saved" list (want to learn)
-// Swipe LEFT  → Disregard word (hidden forever)
-// Tap Like    → Open collections picker with "Liked" pinned at top
-// Tap Mastered → Mark word as mastered (removed from deck)
+// Card deck built as a ZStack — current card on top, next card behind.
+// A single DragGesture on the top card drives all interactions:
+//
+//   Swipe RIGHT  (≥ 110 pt)  → Save to "Saved" list
+//   Swipe LEFT   (≥ 110 pt)  → Disregard word (hidden forever)
+//   Swipe UP     (≥ 110 pt)  → Skip to next card (no action)
+//   Tap Mastered             → Inhale animation, mark as mastered
+//   Tap Like                 → Open Liked / Collections picker
+//
+// No ScrollView means no gesture conflict, no jitter.
+// As the top card moves, the card beneath scales up into view — Tinder style.
 
 import SwiftUI
 
@@ -20,17 +26,17 @@ private extension Double {
     }
 }
 
-// ── Frequency rarity level ────────────────────────────────────────────────────
+// ── Rarity level ──────────────────────────────────────────────────────────────
 
 private enum RarityLevel {
     case obscure, rare, uncommon, advanced
 
     init(zipf: Double) {
         switch zipf {
-        case ..<2.0:  self = .obscure
-        case 2.0..<3.0: self = .rare
-        case 3.0..<4.0: self = .uncommon
-        default:        self = .advanced
+        case ..<2.0:     self = .obscure
+        case 2.0..<3.0:  self = .rare
+        case 3.0..<4.0:  self = .uncommon
+        default:         self = .advanced
         }
     }
 
@@ -45,10 +51,10 @@ private enum RarityLevel {
 
     var color: Color {
         switch self {
-        case .obscure:  return Color(red: 0.65, green: 0.45, blue: 0.90) // purple
-        case .rare:     return Color(red: 0.40, green: 0.65, blue: 0.95) // blue
-        case .uncommon: return Color(red: 0.35, green: 0.80, blue: 0.75) // teal
-        case .advanced: return Color(red: 0.45, green: 0.85, blue: 0.55) // green
+        case .obscure:  return Color(red: 0.65, green: 0.45, blue: 0.90)
+        case .rare:     return Color(red: 0.40, green: 0.65, blue: 0.95)
+        case .uncommon: return Color(red: 0.35, green: 0.80, blue: 0.75)
+        case .advanced: return Color(red: 0.45, green: 0.85, blue: 0.55)
         }
     }
 }
@@ -62,25 +68,58 @@ struct ContentView: View {
     @StateObject private var scheduler        = DeckScheduler()
     @StateObject private var milestoneManager = MilestoneManager()
 
-    @State private var celebrationMilestone: Milestone?      = nil
+    @State private var celebrationMilestone: Milestone?     = nil
     @State private var showingMilestones    = false
-    @State private var selectedWord:        VocabularyWord?  = nil
-    @State private var infoWord:            VocabularyWord?  = nil
-    @State private var likeWord:            VocabularyWord?  = nil   // opens like/collections picker
+    @State private var infoWord:            VocabularyWord? = nil
+    @State private var likeWord:            VocabularyWord? = nil
+    @State private var selectedWord:        VocabularyWord? = nil   // widget deep-link
     @State private var showingLibrary       = false
-    @State private var currentCardID:       UUID?            = nil
-    @State private var fetchingAudioForID:  Int?             = nil
-    @State private var masteringWordID:     Int?             = nil
-    /// Horizontal drag offset per card UUID — drives the swipe gesture.
-    @State private var cardDragOffset:      [UUID: CGFloat]  = [:]
+    @State private var currentCardID:       UUID?           = nil
+    @State private var fetchingAudioForID:  Int?            = nil
+    @State private var masteringWordID:     Int?            = nil
+    /// Live drag translation — drives offset, rotation, and background scale.
+    @State private var dragOffset:          CGSize          = .zero
+    /// Locked true while a fly-off animation is running so the gesture is ignored.
+    @State private var isDismissing:        Bool            = false
 
     private let idToWord: [Int: VocabularyWord] =
         Dictionary(uniqueKeysWithValues: VocabularyStore.words.map { ($0.id, $0) })
+
+    // ── Derived deck ──────────────────────────────────────────────────────────
 
     private var filteredDeck: [DeckCard] {
         let excluded = library.masteredIDs.union(library.disregardedIDs)
         return scheduler.deck.filter { !excluded.contains($0.wordID) }
     }
+
+    private var currentEntry: (card: DeckCard, word: VocabularyWord)? {
+        guard let id = currentCardID,
+              let card = filteredDeck.first(where: { $0.id == id }),
+              let word = idToWord[card.wordID] else { return nil }
+        return (card, word)
+    }
+
+    private var nextEntry: (card: DeckCard, word: VocabularyWord)? {
+        guard let id = currentCardID,
+              let idx = filteredDeck.firstIndex(where: { $0.id == id }),
+              filteredDeck.indices.contains(idx + 1),
+              let word = idToWord[filteredDeck[idx + 1].wordID]
+        else { return nil }
+        return (filteredDeck[idx + 1], word)
+    }
+
+    /// 0 → 1 as drag crosses the dismiss threshold.
+    private var dragProgress: Double {
+        let h = abs(dragOffset.width)
+        let v = max(-dragOffset.height, 0)       // only upward counts
+        return min(max(h, v) / 110.0, 1.0)
+    }
+
+    private var cardRotation: Double {
+        Double(dragOffset.width / 22.0).clamped(to: -13...13)
+    }
+
+    // ── Body ──────────────────────────────────────────────────────────────────
 
     var body: some View {
         NavigationStack {
@@ -90,34 +129,7 @@ struct ContentView: View {
                 if filteredDeck.isEmpty {
                     emptyStateView()
                 } else {
-                    ScrollViewReader { proxy in
-                        ScrollView(.vertical) {
-                            LazyVStack(spacing: 0) {
-                                ForEach(filteredDeck) { card in
-                                    if let word = idToWord[card.wordID] {
-                                        let offset = cardDragOffset[card.id] ?? 0
-                                        wordPage(for: word, cardID: card.id, proxy: proxy)
-                                            .containerRelativeFrame([.horizontal, .vertical])
-                                            .id(card.id)
-                                            .offset(x: offset)
-                                            .rotationEffect(
-                                                .degrees(Double(offset / 22.0).clamped(to: -13...13)),
-                                                anchor: UnitPoint(x: 0.5, y: 0.85)
-                                            )
-                                            .overlay { swipeOverlay(offset: offset) }
-                                            .simultaneousGesture(
-                                                swipeGesture(cardID: card.id, word: word, proxy: proxy)
-                                            )
-                                    }
-                                }
-                            }
-                            .scrollTargetLayout()
-                        }
-                        .scrollTargetBehavior(.paging)
-                        .scrollIndicators(.hidden)
-                        .scrollPosition(id: $currentCardID)
-                        .ignoresSafeArea()
-                    }
+                    cardStack()
                 }
             }
             .ignoresSafeArea()
@@ -131,84 +143,70 @@ struct ContentView: View {
                 }
                 if currentCardID == nil { currentCardID = filteredDeck.first?.id }
             }
+            // Append a new pass when the deck is running low.
             .onChange(of: currentCardID) { _, id in
                 fetchingAudioForID = nil
                 guard let id,
-                      let idx = filteredDeck.firstIndex(where: { $0.id == id }) else { return }
+                      let deckIdx = scheduler.deck.firstIndex(where: { $0.id == id })
+                else { return }
                 scheduler.appendPassIfNeeded(
-                    currentIndex:   idx,
+                    currentIndex:   deckIdx,
                     masteredIDs:    library.masteredIDs,
                     disregardedIDs: library.disregardedIDs
                 )
             }
-            .sheet(item: $selectedWord)   { WordDetailView(word: $0) }
-            .sheet(item: $infoWord)       { WordInfoView(word: $0) }
-            .sheet(item: $likeWord)       { word in
-                LibraryView(library: library, initialTab: .liked, targetWord: word)
-            }
-            .sheet(isPresented: $showingLibrary) { LibraryView(library: library) }
-            .sheet(item: $celebrationMilestone)  { MilestoneCelebrationView(milestone: $0) }
-            .sheet(isPresented: $showingMilestones) {
-                MilestoneProgressView(milestoneManager: milestoneManager, library: library)
-            }
-            .overlay(alignment: .topLeading) {
-                Button { showingMilestones = true } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "trophy.fill")
-                            .font(.system(size: 10, weight: .medium))
-                        Text("\(milestoneManager.shownCounts.count)/\(Milestone.all.count)")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.12))
-                    .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(
-                        Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.25), lineWidth: 0.5))
-                }
-                .padding(.top, 56)
-                .padding(.leading, 24)
-            }
+            .sheet(item: $infoWord)          { WordInfoView(word: $0) }
+            .sheet(item: $likeWord)          { LibraryView(library: library, initialTab: .liked, targetWord: $0) }
+            .sheet(item: $selectedWord)      { WordDetailView(word: $0) }
+            .sheet(isPresented: $showingLibrary)    { LibraryView(library: library) }
+            .sheet(item: $celebrationMilestone)     { MilestoneCelebrationView(milestone: $0) }
+            .sheet(isPresented: $showingMilestones) { MilestoneProgressView(milestoneManager: milestoneManager, library: library) }
+            .overlay(alignment: .topLeading) { milestonesButton() }
             .onOpenURL { url in
-                guard url.scheme == "vocabwidget",
-                      url.host == "word",
+                guard url.scheme == "vocabwidget", url.host == "word",
                       let id = Int(url.lastPathComponent),
-                      let match = allWords.first(where: { $0.id == id })
-                else { return }
+                      let match = allWords.first(where: { $0.id == id }) else { return }
                 selectedWord = match
             }
         }
     }
 
-    // ── Empty state ───────────────────────────────────────────────────────────
+    // ── Card stack ────────────────────────────────────────────────────────────
 
     @ViewBuilder
-    private func emptyStateView() -> some View {
-        VStack(spacing: 0) {
-            Spacer()
-            VStack(spacing: 16) {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 48, weight: .light))
-                    .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
-                Text("All Words Mastered!")
-                    .font(.custom("PlayfairDisplay-Bold", size: 32))
-                    .foregroundStyle(Color.appPrimary)
-                Text("You've mastered every word in the deck.\nCheck your Library to revisit them.")
-                    .font(.custom("Inter_18pt-Regular", size: 16))
-                    .foregroundStyle(Color.appSecondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
+    private func cardStack() -> some View {
+        GeometryReader { geo in
+            ZStack {
+                // ── Card behind (next in deck) ────────────────────────────
+                // Scales up from 92 % → 100 % as the top card is dragged away.
+                if let (nextCard, nextWord) = nextEntry {
+                    let behindScale = 0.92 + 0.08 * dragProgress
+                    let behindY     = 14.0 * (1.0 - dragProgress)
+
+                    cardFace(for: nextWord, cardID: nextCard.id, size: geo.size)
+                        .scaleEffect(behindScale)
+                        .offset(y: behindY)
+                        .allowsHitTesting(false)   // only the top card is interactive
+                }
+
+                // ── Top card (current) ────────────────────────────────────
+                if let (card, word) = currentEntry {
+                    cardFace(for: word, cardID: card.id, size: geo.size)
+                        .offset(x: dragOffset.width, y: dragOffset.height * 0.25)
+                        .rotationEffect(.degrees(cardRotation),
+                                        anchor: UnitPoint(x: 0.5, y: 0.85))
+                        .overlay { swipeOverlay() }
+                        .gesture(deckGesture(word: word, cardID: card.id))
+                }
             }
-            Spacer()
+            .frame(width: geo.size.width, height: geo.size.height)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // ── Word page ─────────────────────────────────────────────────────────────
+    // ── Card face (content + action bar) ──────────────────────────────────────
 
     @ViewBuilder
-    private func wordPage(for word: VocabularyWord, cardID: UUID, proxy: ScrollViewProxy) -> some View {
+    private func cardFace(for word: VocabularyWord, cardID: UUID, size: CGSize) -> some View {
         let isMastering = masteringWordID == word.id
         let mastered    = library.isMastered(word)
         let rarity      = RarityLevel(zipf: word.frequency)
@@ -220,14 +218,12 @@ struct ContentView: View {
                 Spacer()
 
                 VStack(spacing: 16) {
-                    // Word + rarity badge
                     VStack(spacing: 8) {
                         Text(word.word)
                             .font(.custom("PlayfairDisplay-Bold", size: 36))
                             .foregroundStyle(Color.appPrimary)
                             .multilineTextAlignment(.center)
 
-                        // Rarity indicator
                         rarityBadge(rarity)
                     }
 
@@ -259,9 +255,7 @@ struct ContentView: View {
                     }
                 } label: {
                     if fetchingAudioForID == word.id {
-                        ProgressView()
-                            .tint(Color.appSecondary)
-                            .frame(width: 44, height: 44)
+                        ProgressView().tint(Color.appSecondary).frame(width: 44, height: 44)
                     } else {
                         Image(systemName: "speaker.wave.2")
                             .font(.title2)
@@ -274,65 +268,50 @@ struct ContentView: View {
                 Spacer()
                 Color.clear.frame(height: 88)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .scaleEffect(
-                isMastering ? 0.05 : 1.0,
-                anchor: UnitPoint(x: 0.5, y: 0.92)
-            )
+            .frame(width: size.width, height: size.height)
+            .scaleEffect(isMastering ? 0.05 : 1.0,
+                         anchor: UnitPoint(x: 0.5, y: 0.92))
             .opacity(isMastering ? 0.0 : 1.0)
             .animation(.easeIn(duration: 0.30), value: isMastering)
 
             // ── Action bar ────────────────────────────────────────────────
             HStack(spacing: 0) {
-                actionButton(icon: "info.circle", label: "Info") {
-                    infoWord = word
-                }
+                actionButton(icon: "info.circle", label: "Info") { infoWord = word }
+
                 actionButton(
                     icon:  library.isLiked(word) ? "heart.fill" : "heart",
                     label: "Like",
                     color: library.isLiked(word)
                         ? Color(red: 0.95, green: 0.35, blue: 0.35) : Color.appSecondary
-                ) {
-                    likeWord = word
-                }
+                ) { likeWord = word }
 
-                // Mastered button
-                Button { masteredAction(for: word, cardID: cardID, proxy: proxy) } label: {
+                Button { masteredAction(for: word, cardID: cardID) } label: {
                     VStack(spacing: 4) {
                         Image(systemName: mastered ? "checkmark.seal.fill" : "checkmark.seal")
                             .font(.system(size: 19))
-                            .foregroundStyle(
-                                isMastering || mastered
-                                    ? Color(red: 0.35, green: 0.85, blue: 0.55)
-                                    : Color.appSecondary
-                            )
+                            .foregroundStyle(isMastering || mastered
+                                ? Color(red: 0.35, green: 0.85, blue: 0.55) : Color.appSecondary)
                             .scaleEffect(isMastering ? 1.45 : 1.0)
-                            .animation(
-                                .spring(response: 0.22, dampingFraction: 0.4).delay(0.06),
-                                value: isMastering
-                            )
+                            .animation(.spring(response: 0.22, dampingFraction: 0.4).delay(0.06),
+                                       value: isMastering)
                         Text("Mastered")
                             .font(.custom("Inter_18pt-Regular", size: 9))
-                            .foregroundStyle(
-                                isMastering || mastered
-                                    ? Color(red: 0.35, green: 0.85, blue: 0.55)
-                                    : Color.appSecondary
-                            )
+                            .foregroundStyle(isMastering || mastered
+                                ? Color(red: 0.35, green: 0.85, blue: 0.55) : Color.appSecondary)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
                 }
-                .disabled(isMastering)
+                .disabled(isMastering || isDismissing)
 
-                actionButton(icon: "list.bullet", label: "Library") {
-                    showingLibrary = true
-                }
+                actionButton(icon: "list.bullet", label: "Library") { showingLibrary = true }
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 40)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: size.width, height: size.height)
         .background(Color.appBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 0))
     }
 
     // ── Rarity badge ──────────────────────────────────────────────────────────
@@ -350,24 +329,139 @@ struct ContentView: View {
             .overlay(Capsule().strokeBorder(rarity.color.opacity(0.30), lineWidth: 0.5))
     }
 
+    // ── Swipe overlay ─────────────────────────────────────────────────────────
+
+    @ViewBuilder
+    private func swipeOverlay() -> some View {
+        let hProgress = min(abs(dragOffset.width) / 110.0, 1.0)
+        let vProgress = min(max(-dragOffset.height, 0) / 110.0, 1.0)
+
+        ZStack(alignment: .topLeading) {
+            if dragOffset.width > 5 {
+                // SAVE — right
+                VStack {
+                    HStack {
+                        Spacer()
+                        swipeLabel("SAVE", color: Color(red: 0.35, green: 0.85, blue: 0.55),
+                                   rotation: -14)
+                            .padding(.top, 100).padding(.trailing, 36)
+                    }
+                    Spacer()
+                }
+                .opacity(hProgress)
+
+            } else if dragOffset.width < -5 {
+                // NOPE — left
+                VStack {
+                    HStack {
+                        swipeLabel("NOPE", color: Color(red: 0.95, green: 0.38, blue: 0.38),
+                                   rotation: 14)
+                            .padding(.top, 100).padding(.leading, 36)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .opacity(hProgress)
+
+            } else if dragOffset.height < -5 {
+                // SKIP — up
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        swipeLabel("SKIP", color: Color(red: 0.95, green: 0.78, blue: 0.35),
+                                   rotation: 0)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .opacity(vProgress)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func swipeLabel(_ text: String, color: Color, rotation: Double) -> some View {
+        Text(text)
+            .font(.system(size: 30, weight: .black))
+            .foregroundStyle(color)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(color, lineWidth: 3))
+            .rotationEffect(.degrees(rotation))
+    }
+
+    // ── Deck gesture ──────────────────────────────────────────────────────────
+
+    private func deckGesture(word: VocabularyWord, cardID: UUID) -> some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                guard !isDismissing, masteringWordID == nil else { return }
+                dragOffset = value.translation
+            }
+            .onEnded { value in
+                guard !isDismissing, masteringWordID == nil else { return }
+                let dx = value.translation.width
+                let dy = value.translation.height
+                let absH = abs(dx)
+                let absV = abs(dy)
+
+                if absH > 110 && absH >= absV {
+                    // Horizontal swipe wins
+                    if dx > 0 { flyOff(to: .right, word: word, cardID: cardID) }
+                    else      { flyOff(to: .left,  word: word, cardID: cardID) }
+                } else if dy < -110 && absV > absH {
+                    // Upward swipe — skip
+                    flyOff(to: .up, word: word, cardID: cardID)
+                } else {
+                    // Snap back
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                        dragOffset = .zero
+                    }
+                }
+            }
+    }
+
+    private enum SwipeDirection { case left, right, up }
+
+    private func flyOff(to direction: SwipeDirection, word: VocabularyWord, cardID: UUID) {
+        isDismissing = true
+        let target: CGSize
+        switch direction {
+        case .right: target = CGSize(width:  700, height:  0)
+        case .left:  target = CGSize(width: -700, height:  0)
+        case .up:    target = CGSize(width:    0, height: -700)
+        }
+
+        withAnimation(.easeIn(duration: 0.22)) { dragOffset = target }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            // Perform the action
+            switch direction {
+            case .right: library.toggleSaved(word)
+            case .left:  library.disregard(word)
+            case .up:    break   // skip — no state change
+            }
+            advance(from: cardID)
+            dragOffset   = .zero
+            isDismissing = false
+        }
+    }
+
     // ── Mastered action ───────────────────────────────────────────────────────
 
-    private func masteredAction(for word: VocabularyWord, cardID: UUID, proxy: ScrollViewProxy) {
+    private func masteredAction(for word: VocabularyWord, cardID: UUID) {
         masteringWordID = word.id
 
-        let nextCardID: UUID? = {
+        let nextID: UUID? = {
             guard let idx = filteredDeck.firstIndex(where: { $0.id == cardID }),
                   filteredDeck.indices.contains(idx + 1) else { return nil }
             return filteredDeck[idx + 1].id
         }()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
-            if let next = nextCardID {
-                proxy.scrollTo(next, anchor: .top)
-                currentCardID = next
-            }
             library.toggleMastered(word)
             masteringWordID = nil
+            currentCardID = nextID ?? filteredDeck.first?.id
 
             if let hit = milestoneManager.milestone(forNewCount: library.masteredIDs.count) {
                 celebrationMilestone = hit
@@ -375,121 +469,72 @@ struct ContentView: View {
         }
     }
 
-    // ── Swipe-to-curate gestures ──────────────────────────────────────────────
+    // ── Navigation helpers ────────────────────────────────────────────────────
 
-    private func swipeGesture(cardID: UUID, word: VocabularyWord, proxy: ScrollViewProxy) -> some Gesture {
-        DragGesture(minimumDistance: 10)
-            .onChanged { value in
-                let h = abs(value.translation.width)
-                let v = abs(value.translation.height)
-                if h > v || abs(cardDragOffset[cardID] ?? 0) > 5 {
-                    cardDragOffset[cardID] = value.translation.width
-                }
-            }
-            .onEnded { value in
-                let dx = value.translation.width
-                if dx > 110 {
-                    saveAction(for: word, cardID: cardID, proxy: proxy)
-                } else if dx < -110 {
-                    disregardAction(for: word, cardID: cardID, proxy: proxy)
-                } else {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        cardDragOffset[cardID] = 0
-                    }
-                }
-            }
-    }
-
-    /// Swipe right — adds word to Saved list and advances.
-    private func saveAction(for word: VocabularyWord, cardID: UUID, proxy: ScrollViewProxy) {
-        let nextID = nextCardID(after: cardID)
-        withAnimation(.easeIn(duration: 0.22)) { cardDragOffset[cardID] = 650 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) {
-            library.toggleSaved(word)
-            advanceCard(to: nextID, proxy: proxy)
-            cardDragOffset[cardID] = 0
-        }
-    }
-
-    /// Swipe left — disregards word permanently (filtered from deck reactively).
-    private func disregardAction(for word: VocabularyWord, cardID: UUID, proxy: ScrollViewProxy) {
-        let nextID = nextCardID(after: cardID)
-        withAnimation(.easeIn(duration: 0.22)) { cardDragOffset[cardID] = -650 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) {
-            library.disregard(word)
-            advanceCard(to: nextID, proxy: proxy)
-            cardDragOffset[cardID] = 0
-        }
-    }
-
-    private func nextCardID(after cardID: UUID) -> UUID? {
+    private func advance(from cardID: UUID) {
         guard let idx = filteredDeck.firstIndex(where: { $0.id == cardID }),
-              filteredDeck.indices.contains(idx + 1) else { return nil }
-        return filteredDeck[idx + 1].id
+              filteredDeck.indices.contains(idx + 1)
+        else {
+            currentCardID = filteredDeck.first?.id
+            return
+        }
+        currentCardID = filteredDeck[idx + 1].id
     }
 
-    private func advanceCard(to nextID: UUID?, proxy: ScrollViewProxy) {
-        guard let next = nextID else { return }
-        proxy.scrollTo(next, anchor: .top)
-        currentCardID = next
-    }
+    // ── Empty state ───────────────────────────────────────────────────────────
 
-    /// SAVE / DISREGARD overlay labels — fade in as the user drags.
     @ViewBuilder
-    private func swipeOverlay(offset: CGFloat) -> some View {
-        let progress = min(abs(offset) / 110.0, 1.0)
-        if offset > 5 {
-            VStack {
-                HStack {
-                    Spacer()
-                    Text("SAVE")
-                        .font(.system(size: 30, weight: .black))
-                        .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
-                        .padding(.horizontal, 14).padding(.vertical, 10)
-                        .overlay(RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Color(red: 0.35, green: 0.85, blue: 0.55), lineWidth: 3))
-                        .rotationEffect(.degrees(-14))
-                        .padding(.top, 110).padding(.trailing, 36)
-                }
-                Spacer()
-            }
-            .opacity(Double(progress))
-        } else if offset < -5 {
-            VStack {
-                HStack {
-                    Text("NOPE")
-                        .font(.system(size: 30, weight: .black))
-                        .foregroundStyle(Color(red: 0.95, green: 0.38, blue: 0.38))
-                        .padding(.horizontal, 14).padding(.vertical, 10)
-                        .overlay(RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Color(red: 0.95, green: 0.38, blue: 0.38), lineWidth: 3))
-                        .rotationEffect(.degrees(14))
-                        .padding(.top, 110).padding(.leading, 36)
-                    Spacer()
-                }
-                Spacer()
-            }
-            .opacity(Double(progress))
+    private func emptyStateView() -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 48, weight: .light))
+                .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
+            Text("All Words Mastered!")
+                .font(.custom("PlayfairDisplay-Bold", size: 32))
+                .foregroundStyle(Color.appPrimary)
+            Text("You've mastered every word in the deck.\nCheck your Library to revisit them.")
+                .font(.custom("Inter_18pt-Regular", size: 16))
+                .foregroundStyle(Color.appSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
         }
     }
 
-    // ── Action button ─────────────────────────────────────────────────────────
+    // ── Milestones button ─────────────────────────────────────────────────────
+
+    @ViewBuilder
+    private func milestonesButton() -> some View {
+        Button { showingMilestones = true } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "trophy.fill")
+                    .font(.system(size: 10, weight: .medium))
+                Text("\(milestoneManager.shownCounts.count)/\(Milestone.all.count)")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.12))
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(
+                Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.25), lineWidth: 0.5))
+        }
+        .padding(.top, 56)
+        .padding(.leading, 24)
+    }
+
+    // ── Action button helper ──────────────────────────────────────────────────
 
     @ViewBuilder
     private func actionButton(
-        icon: String,
-        label: String,
+        icon: String, label: String,
         color: Color = Color.appSecondary,
-        action: @escaping () -> Void = {}
+        action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 19))
-                    .foregroundStyle(color)
-                Text(label)
-                    .font(.custom("Inter_18pt-Regular", size: 9))
-                    .foregroundStyle(color)
+                Image(systemName: icon).font(.system(size: 19)).foregroundStyle(color)
+                Text(label).font(.custom("Inter_18pt-Regular", size: 9)).foregroundStyle(color)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
@@ -498,7 +543,7 @@ struct ContentView: View {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MARK: - WordDetailView
+// MARK: - WordDetailView  (widget deep-link target)
 // ─────────────────────────────────────────────────────────────────────────────
 struct WordDetailView: View {
     let word: VocabularyWord
@@ -521,10 +566,8 @@ struct WordDetailView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Label(word.examples.count > 1 ? "Examples" : "Example",
                                   systemImage: "quote.opening").font(.headline).foregroundStyle(.blue)
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(word.examples, id: \.self) { example in
-                                    Text("\u{201C}\(example)\u{201D}").font(.body).italic().foregroundStyle(.secondary)
-                                }
+                            ForEach(word.examples, id: \.self) { example in
+                                Text("\u{201C}\(example)\u{201D}").font(.body).italic().foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -538,7 +581,4 @@ struct WordDetailView: View {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MARK: - Preview
-// ─────────────────────────────────────────────────────────────────────────────
 #Preview { ContentView() }
