@@ -101,7 +101,7 @@ struct VocabularyStore {
                                   definition: "A happy accident.",
                                   examples: ["Finding the café was pure serendipity."],
                                   synonyms: [], origin: nil,
-                                  level: "beginner", isFeatured: true, mastered: false)
+                                  frequency: 4.5, isFeatured: true, mastered: false)
         }
         // Wrap the offset around the full word list.
         // dayOffset 0 = words[0], -1 = words[last], etc.

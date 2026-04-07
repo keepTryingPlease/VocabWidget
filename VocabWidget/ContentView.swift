@@ -1,10 +1,10 @@
 // ContentView.swift
-// The main screen of the app.
+// Main screen — vertical paging deck with horizontal swipe-to-curate gestures.
 //
-// Paging is driven by a native ScrollView with .scrollTargetBehavior(.paging)
-// backed by UIKit's hardware-accelerated scroll layer, giving full 120 Hz
-// throughput. The previous hand-rolled DragGesture approach forced a full
-// SwiftUI layout pass on every finger-movement event, causing frame drops.
+// Swipe RIGHT → Save word to "Saved" list (want to learn)
+// Swipe LEFT  → Disregard word (hidden forever)
+// Tap Like    → Open collections picker with "Liked" pinned at top
+// Tap Mastered → Mark word as mastered (removed from deck)
 
 import SwiftUI
 
@@ -14,6 +14,47 @@ private extension Color {
     static let appSecondary  = Color(red: 0.55, green: 0.54, blue: 0.52)
 }
 
+private extension Double {
+    func clamped(to range: ClosedRange<Double>) -> Double {
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+// ── Frequency rarity level ────────────────────────────────────────────────────
+
+private enum RarityLevel {
+    case obscure, rare, uncommon, advanced
+
+    init(zipf: Double) {
+        switch zipf {
+        case ..<2.0:  self = .obscure
+        case 2.0..<3.0: self = .rare
+        case 3.0..<4.0: self = .uncommon
+        default:        self = .advanced
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .obscure:  return "Obscure"
+        case .rare:     return "Rare"
+        case .uncommon: return "Uncommon"
+        case .advanced: return "Advanced"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .obscure:  return Color(red: 0.65, green: 0.45, blue: 0.90) // purple
+        case .rare:     return Color(red: 0.40, green: 0.65, blue: 0.95) // blue
+        case .uncommon: return Color(red: 0.35, green: 0.80, blue: 0.75) // teal
+        case .advanced: return Color(red: 0.45, green: 0.85, blue: 0.55) // green
+        }
+    }
+}
+
+// ── ContentView ───────────────────────────────────────────────────────────────
+
 struct ContentView: View {
 
     let allWords = VocabularyStore.words
@@ -21,30 +62,24 @@ struct ContentView: View {
     @StateObject private var scheduler        = DeckScheduler()
     @StateObject private var milestoneManager = MilestoneManager()
 
-    @State private var celebrationMilestone: Milestone? = nil
+    @State private var celebrationMilestone: Milestone?      = nil
     @State private var showingMilestones    = false
-    @State private var selectedWord:        VocabularyWord? = nil
-    @State private var infoWord:            VocabularyWord? = nil
-    @State private var collectionsWord:     VocabularyWord? = nil
+    @State private var selectedWord:        VocabularyWord?  = nil
+    @State private var infoWord:            VocabularyWord?  = nil
+    @State private var likeWord:            VocabularyWord?  = nil   // opens like/collections picker
     @State private var showingLibrary       = false
-    @State private var currentCardID:       UUID?  = nil
-    @State private var fetchingAudioForID:  Int?   = nil
-    /// Word ID currently playing the inhale-to-mastered animation.
-    @State private var masteringWordID:     Int?   = nil
+    @State private var currentCardID:       UUID?            = nil
+    @State private var fetchingAudioForID:  Int?             = nil
+    @State private var masteringWordID:     Int?             = nil
+    /// Horizontal drag offset per card UUID — drives the swipe gesture.
+    @State private var cardDragOffset:      [UUID: CGFloat]  = [:]
 
-    // Lookup table — built once per word bank load, reused everywhere.
     private let idToWord: [Int: VocabularyWord] =
         Dictionary(uniqueKeysWithValues: VocabularyStore.words.map { ($0.id, $0) })
 
-    // Deck cards with mastered words filtered out.
-    // Reacts to both scheduler.deck and library.masteredIDs (@Published on both).
     private var filteredDeck: [DeckCard] {
-        let masteredSet = library.masteredIDs
-        return scheduler.deck.filter { !masteredSet.contains($0.wordID) }
-    }
-
-    private var hasUnmasteredWords: Bool {
-        VocabularyStore.words.contains { !library.masteredIDs.contains($0.id) }
+        let excluded = library.masteredIDs.union(library.disregardedIDs)
+        return scheduler.deck.filter { !excluded.contains($0.wordID) }
     }
 
     var body: some View {
@@ -60,9 +95,19 @@ struct ContentView: View {
                             LazyVStack(spacing: 0) {
                                 ForEach(filteredDeck) { card in
                                     if let word = idToWord[card.wordID] {
+                                        let offset = cardDragOffset[card.id] ?? 0
                                         wordPage(for: word, cardID: card.id, proxy: proxy)
                                             .containerRelativeFrame([.horizontal, .vertical])
                                             .id(card.id)
+                                            .offset(x: offset)
+                                            .rotationEffect(
+                                                .degrees(Double(offset / 22.0).clamped(to: -13...13)),
+                                                anchor: UnitPoint(x: 0.5, y: 0.85)
+                                            )
+                                            .overlay { swipeOverlay(offset: offset) }
+                                            .simultaneousGesture(
+                                                swipeGesture(cardID: card.id, word: word, proxy: proxy)
+                                            )
                                     }
                                 }
                             }
@@ -79,29 +124,30 @@ struct ContentView: View {
             .navigationBarHidden(true)
             .onAppear {
                 if scheduler.deck.isEmpty {
-                    scheduler.buildInitialDeck(masteredIDs: library.masteredIDs, userSkill: library.userSkill)
+                    scheduler.buildInitialDeck(
+                        masteredIDs:    library.masteredIDs,
+                        disregardedIDs: library.disregardedIDs
+                    )
                 }
                 if currentCardID == nil { currentCardID = filteredDeck.first?.id }
             }
             .onChange(of: currentCardID) { _, id in
                 fetchingAudioForID = nil
-                // When within 8 cards of the end, silently loop by appending a
-                // fresh zone-sorted pass at the current skill level.
                 guard let id,
                       let idx = filteredDeck.firstIndex(where: { $0.id == id }) else { return }
                 scheduler.appendPassIfNeeded(
-                    currentIndex: idx,
-                    masteredIDs:  library.masteredIDs,
-                    userSkill:    library.userSkill
+                    currentIndex:   idx,
+                    masteredIDs:    library.masteredIDs,
+                    disregardedIDs: library.disregardedIDs
                 )
             }
-            .sheet(item: $selectedWord)        { WordDetailView(word: $0) }
-            .sheet(item: $infoWord)            { WordInfoView(word: $0) }
-            .sheet(isPresented: $showingLibrary) { LibraryView(library: library) }
-            .sheet(item: $collectionsWord) {
-                LibraryView(library: library, initialTab: .collections, targetWord: $0)
+            .sheet(item: $selectedWord)   { WordDetailView(word: $0) }
+            .sheet(item: $infoWord)       { WordInfoView(word: $0) }
+            .sheet(item: $likeWord)       { word in
+                LibraryView(library: library, initialTab: .liked, targetWord: word)
             }
-            .sheet(item: $celebrationMilestone) { MilestoneCelebrationView(milestone: $0) }
+            .sheet(isPresented: $showingLibrary) { LibraryView(library: library) }
+            .sheet(item: $celebrationMilestone)  { MilestoneCelebrationView(milestone: $0) }
             .sheet(isPresented: $showingMilestones) {
                 MilestoneProgressView(milestoneManager: milestoneManager, library: library)
             }
@@ -136,11 +182,11 @@ struct ContentView: View {
     }
 
     // ── Empty state ───────────────────────────────────────────────────────────
+
     @ViewBuilder
     private func emptyStateView() -> some View {
         VStack(spacing: 0) {
             Spacer()
-
             VStack(spacing: 16) {
                 Image(systemName: "checkmark.seal.fill")
                     .font(.system(size: 48, weight: .light))
@@ -160,25 +206,30 @@ struct ContentView: View {
     }
 
     // ── Word page ─────────────────────────────────────────────────────────────
-    // The page is split into two layers in a ZStack:
-    //   1. Card content  — animates (inhale) when mastered
-    //   2. Action bar    — stays fixed so the mastered button is visible during the animation
+
     @ViewBuilder
     private func wordPage(for word: VocabularyWord, cardID: UUID, proxy: ScrollViewProxy) -> some View {
         let isMastering = masteringWordID == word.id
         let mastered    = library.isMastered(word)
+        let rarity      = RarityLevel(zipf: word.frequency)
 
         ZStack(alignment: .bottom) {
 
-            // ── Card content (animated on master) ────────────────────────
+            // ── Card content ──────────────────────────────────────────────
             VStack(spacing: 0) {
                 Spacer()
 
                 VStack(spacing: 16) {
-                    Text(word.word)
-                        .font(.custom("PlayfairDisplay-Bold", size: 36))
-                        .foregroundStyle(Color.appPrimary)
-                        .multilineTextAlignment(.center)
+                    // Word + rarity badge
+                    VStack(spacing: 8) {
+                        Text(word.word)
+                            .font(.custom("PlayfairDisplay-Bold", size: 36))
+                            .foregroundStyle(Color.appPrimary)
+                            .multilineTextAlignment(.center)
+
+                        // Rarity indicator
+                        rarityBadge(rarity)
+                    }
 
                     Divider()
                         .overlay(Color.appSecondary.opacity(0.4))
@@ -221,13 +272,9 @@ struct ContentView: View {
                 .padding(.top, 16)
 
                 Spacer()
-                // Spacer matching the action bar height so content is vertically centred.
                 Color.clear.frame(height: 88)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // ── Inhale animation ──────────────────────────────────────────
-            // Shrinks toward the action bar (anchor y=1) with easeIn so it
-            // accelerates, feeling "pulled in" rather than just fading away.
             .scaleEffect(
                 isMastering ? 0.05 : 1.0,
                 anchor: UnitPoint(x: 0.5, y: 0.92)
@@ -235,7 +282,7 @@ struct ContentView: View {
             .opacity(isMastering ? 0.0 : 1.0)
             .animation(.easeIn(duration: 0.30), value: isMastering)
 
-            // ── Action bar (not animated, always visible) ─────────────────
+            // ── Action bar ────────────────────────────────────────────────
             HStack(spacing: 0) {
                 actionButton(icon: "info.circle", label: "Info") {
                     infoWord = word
@@ -246,10 +293,10 @@ struct ContentView: View {
                     color: library.isLiked(word)
                         ? Color(red: 0.95, green: 0.35, blue: 0.35) : Color.appSecondary
                 ) {
-                    library.toggleLike(word)
+                    likeWord = word
                 }
 
-                // ── Mastered button — inline so the icon can spring-pulse ──
+                // Mastered button
                 Button { masteredAction(for: word, cardID: cardID, proxy: proxy) } label: {
                     VStack(spacing: 4) {
                         Image(systemName: mastered ? "checkmark.seal.fill" : "checkmark.seal")
@@ -259,7 +306,6 @@ struct ContentView: View {
                                     ? Color(red: 0.35, green: 0.85, blue: 0.55)
                                     : Color.appSecondary
                             )
-                            // Spring-pulse when the inhale starts
                             .scaleEffect(isMastering ? 1.45 : 1.0)
                             .animation(
                                 .spring(response: 0.22, dampingFraction: 0.4).delay(0.06),
@@ -278,9 +324,6 @@ struct ContentView: View {
                 }
                 .disabled(isMastering)
 
-                actionButton(icon: "square.stack", label: "Collections") {
-                    collectionsWord = word
-                }
                 actionButton(icon: "list.bullet", label: "Library") {
                     showingLibrary = true
                 }
@@ -292,12 +335,26 @@ struct ContentView: View {
         .background(Color.appBackground)
     }
 
+    // ── Rarity badge ──────────────────────────────────────────────────────────
+
+    @ViewBuilder
+    private func rarityBadge(_ rarity: RarityLevel) -> some View {
+        Text(rarity.label.uppercased())
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            .tracking(1.2)
+            .foregroundStyle(rarity.color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(rarity.color.opacity(0.10))
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(rarity.color.opacity(0.30), lineWidth: 0.5))
+    }
+
     // ── Mastered action ───────────────────────────────────────────────────────
+
     private func masteredAction(for word: VocabularyWord, cardID: UUID, proxy: ScrollViewProxy) {
-        // Kick off the inhale animation.
         masteringWordID = word.id
 
-        // Capture the next card's UUID now, before anything changes.
         let nextCardID: UUID? = {
             guard let idx = filteredDeck.firstIndex(where: { $0.id == cardID }),
                   filteredDeck.indices.contains(idx + 1) else { return nil }
@@ -305,26 +362,12 @@ struct ContentView: View {
         }()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
-            // Scroll to the next card.
             if let next = nextCardID {
                 proxy.scrollTo(next, anchor: .top)
                 currentCardID = next
             }
-
-            // Mark mastered — filteredDeck automatically drops this word everywhere.
             library.toggleMastered(word)
             masteringWordID = nil
-
-            // Rebuild everything ahead of the current card using the updated skill
-            // level. The next card is already on screen; all cards after it get
-            // fresh zone-sorted calibration.
-            if let anchor = nextCardID {
-                scheduler.rebuildAhead(
-                    after:      anchor,
-                    masteredIDs: library.masteredIDs,
-                    userSkill:   library.userSkill
-                )
-            }
 
             if let hit = milestoneManager.milestone(forNewCount: library.masteredIDs.count) {
                 celebrationMilestone = hit
@@ -332,7 +375,106 @@ struct ContentView: View {
         }
     }
 
+    // ── Swipe-to-curate gestures ──────────────────────────────────────────────
+
+    private func swipeGesture(cardID: UUID, word: VocabularyWord, proxy: ScrollViewProxy) -> some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                let h = abs(value.translation.width)
+                let v = abs(value.translation.height)
+                if h > v || abs(cardDragOffset[cardID] ?? 0) > 5 {
+                    cardDragOffset[cardID] = value.translation.width
+                }
+            }
+            .onEnded { value in
+                let dx = value.translation.width
+                if dx > 110 {
+                    saveAction(for: word, cardID: cardID, proxy: proxy)
+                } else if dx < -110 {
+                    disregardAction(for: word, cardID: cardID, proxy: proxy)
+                } else {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        cardDragOffset[cardID] = 0
+                    }
+                }
+            }
+    }
+
+    /// Swipe right — adds word to Saved list and advances.
+    private func saveAction(for word: VocabularyWord, cardID: UUID, proxy: ScrollViewProxy) {
+        let nextID = nextCardID(after: cardID)
+        withAnimation(.easeIn(duration: 0.22)) { cardDragOffset[cardID] = 650 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) {
+            library.toggleSaved(word)
+            advanceCard(to: nextID, proxy: proxy)
+            cardDragOffset[cardID] = 0
+        }
+    }
+
+    /// Swipe left — disregards word permanently (filtered from deck reactively).
+    private func disregardAction(for word: VocabularyWord, cardID: UUID, proxy: ScrollViewProxy) {
+        let nextID = nextCardID(after: cardID)
+        withAnimation(.easeIn(duration: 0.22)) { cardDragOffset[cardID] = -650 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) {
+            library.disregard(word)
+            advanceCard(to: nextID, proxy: proxy)
+            cardDragOffset[cardID] = 0
+        }
+    }
+
+    private func nextCardID(after cardID: UUID) -> UUID? {
+        guard let idx = filteredDeck.firstIndex(where: { $0.id == cardID }),
+              filteredDeck.indices.contains(idx + 1) else { return nil }
+        return filteredDeck[idx + 1].id
+    }
+
+    private func advanceCard(to nextID: UUID?, proxy: ScrollViewProxy) {
+        guard let next = nextID else { return }
+        proxy.scrollTo(next, anchor: .top)
+        currentCardID = next
+    }
+
+    /// SAVE / DISREGARD overlay labels — fade in as the user drags.
+    @ViewBuilder
+    private func swipeOverlay(offset: CGFloat) -> some View {
+        let progress = min(abs(offset) / 110.0, 1.0)
+        if offset > 5 {
+            VStack {
+                HStack {
+                    Spacer()
+                    Text("SAVE")
+                        .font(.system(size: 30, weight: .black))
+                        .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color(red: 0.35, green: 0.85, blue: 0.55), lineWidth: 3))
+                        .rotationEffect(.degrees(-14))
+                        .padding(.top, 110).padding(.trailing, 36)
+                }
+                Spacer()
+            }
+            .opacity(Double(progress))
+        } else if offset < -5 {
+            VStack {
+                HStack {
+                    Text("NOPE")
+                        .font(.system(size: 30, weight: .black))
+                        .foregroundStyle(Color(red: 0.95, green: 0.38, blue: 0.38))
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color(red: 0.95, green: 0.38, blue: 0.38), lineWidth: 3))
+                        .rotationEffect(.degrees(14))
+                        .padding(.top, 110).padding(.leading, 36)
+                    Spacer()
+                }
+                Spacer()
+            }
+            .opacity(Double(progress))
+        }
+    }
+
     // ── Action button ─────────────────────────────────────────────────────────
+
     @ViewBuilder
     private func actionButton(
         icon: String,
@@ -357,7 +499,6 @@ struct ContentView: View {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - WordDetailView
-// Full-screen detail sheet — used by the widget deep link (vocabwidget://word/id).
 // ─────────────────────────────────────────────────────────────────────────────
 struct WordDetailView: View {
     let word: VocabularyWord
@@ -367,39 +508,22 @@ struct WordDetailView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(word.word)
-                            .font(.largeTitle)
-                            .bold()
-                        Text(word.partOfSpeech)
-                            .font(.subheadline)
-                            .italic()
-                            .foregroundStyle(.secondary)
+                        Text(word.word).font(.largeTitle).bold()
+                        Text(word.partOfSpeech).font(.subheadline).italic().foregroundStyle(.secondary)
                     }
-
                     Divider()
-
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("Definition", systemImage: "text.book.closed")
-                            .font(.headline)
-                            .foregroundStyle(.blue)
-                        Text(word.definition)
-                            .font(.body)
+                        Label("Definition", systemImage: "text.book.closed").font(.headline).foregroundStyle(.blue)
+                        Text(word.definition).font(.body)
                     }
-
                     if !word.examples.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
                             Label(word.examples.count > 1 ? "Examples" : "Example",
-                                  systemImage: "quote.opening")
-                                .font(.headline)
-                                .foregroundStyle(.blue)
+                                  systemImage: "quote.opening").font(.headline).foregroundStyle(.blue)
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(word.examples, id: \.self) { example in
-                                    Text("\u{201C}\(example)\u{201D}")
-                                        .font(.body)
-                                        .italic()
-                                        .foregroundStyle(.secondary)
+                                    Text("\u{201C}\(example)\u{201D}").font(.body).italic().foregroundStyle(.secondary)
                                 }
                             }
                         }
@@ -409,11 +533,7 @@ struct WordDetailView: View {
             }
             .navigationTitle(word.word)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
         }
     }
 }
@@ -421,6 +541,4 @@ struct WordDetailView: View {
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Preview
 // ─────────────────────────────────────────────────────────────────────────────
-#Preview {
-    ContentView()
-}
+#Preview { ContentView() }

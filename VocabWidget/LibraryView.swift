@@ -1,10 +1,11 @@
 // LibraryView.swift
-// Full library sheet — opened from the list icon in the action bar.
-// Three tabs: Liked words, Mastered words, and user-created Collections.
+// Full library sheet.
 //
-// Also used when the Collections action button is tapped on a card:
-// opens directly on the Collections tab with targetWord set so each
-// collection row shows a toggle instead of a navigation link.
+// Tabs (normal mode): Saved · Liked · Mastered · Collections
+//
+// When opened from the Like button (initialTab: .liked, targetWord: set):
+//   - Shows the collections picker with a hardcoded "Liked ♥" row pinned at top.
+//   - User toggles Liked and/or collections, then taps Done.
 
 import SwiftUI
 
@@ -14,31 +15,44 @@ private extension Color {
     static let appSecondary  = Color(red: 0.55, green: 0.54, blue: 0.52)
 }
 
+/// Three dots whose fill conveys Zipf frequency: more filled = more common/easier.
+@ViewBuilder
+private func frequencyBadge(_ zipf: Double) -> some View {
+    let filled = zipf >= 4.0 ? 3 : zipf >= 3.0 ? 2 : 1
+    HStack(spacing: 3) {
+        ForEach(1...3, id: \.self) { i in
+            Circle()
+                .fill(i <= filled ? Color.appSecondary : Color.appSecondary.opacity(0.2))
+                .frame(width: 5, height: 5)
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - LibraryView
 // ─────────────────────────────────────────────────────────────────────────────
+
 struct LibraryView: View {
 
     @ObservedObject var library: UserLibrary
-    /// Non-nil when opened from the Collections card button.
-    /// Hides the tab picker and puts collection rows into toggle mode.
+    /// Non-nil when opened from the Like button — puts the sheet into picker mode.
     let targetWord: VocabularyWord?
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var selectedTab:        Tab
-    @State private var detailWord:         VocabularyWord? = nil
-    @State private var showNewAlert        = false
-    @State private var newCollectionName   = ""
+    @State private var selectedTab:      Tab
+    @State private var detailWord:       VocabularyWord? = nil
+    @State private var showNewAlert      = false
+    @State private var newCollectionName = ""
 
     enum Tab: String, CaseIterable {
+        case saved       = "Saved"
         case liked       = "Liked"
         case mastered    = "Mastered"
         case collections = "Collections"
     }
 
-    // Designated init so initialTab and targetWord can be injected.
-    init(library: UserLibrary, initialTab: Tab = .liked, targetWord: VocabularyWord? = nil) {
+    init(library: UserLibrary, initialTab: Tab = .saved, targetWord: VocabularyWord? = nil) {
         self.library    = library
         self.targetWord = targetWord
         _selectedTab    = State(initialValue: initialTab)
@@ -48,7 +62,7 @@ struct LibraryView: View {
         NavigationStack {
             VStack(spacing: 0) {
 
-                // ── Tab picker — hidden when opened from Collections button ─
+                // Tab picker — hidden in picker mode (opened from Like button)
                 if targetWord == nil {
                     Picker("", selection: $selectedTab) {
                         ForEach(Tab.allCases, id: \.self) { tab in
@@ -64,15 +78,27 @@ struct LibraryView: View {
                         .overlay(Color.appSecondary.opacity(0.3))
                 }
 
-                // ── Tab content ───────────────────────────────────────────
+                // Tab content
                 switch selectedTab {
-                case .liked:
+                case .saved:
                     wordList(
-                        library.likedWords,
-                        emptyIcon:    "heart",
-                        emptyMessage: "No liked words yet.",
-                        emptyHint:    "Tap ♡ on any word to save it here."
+                        library.savedWords,
+                        emptyIcon:    "bookmark",
+                        emptyMessage: "No saved words yet.",
+                        emptyHint:    "Swipe right on any card to save it here."
                     )
+                case .liked:
+                    if targetWord != nil {
+                        // Picker mode: show Liked + collections as toggles
+                        likePickerContent()
+                    } else {
+                        wordList(
+                            library.likedWords,
+                            emptyIcon:    "heart",
+                            emptyMessage: "No liked words yet.",
+                            emptyHint:    "Tap ♡ on a card to save it here."
+                        )
+                    }
                 case .mastered:
                     wordList(
                         library.masteredWords,
@@ -85,7 +111,7 @@ struct LibraryView: View {
                 }
             }
             .background(Color.appBackground)
-            .navigationTitle(targetWord != nil ? "Collections" : "My Library")
+            .navigationTitle(targetWord != nil ? "Add to…" : "My Library")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
@@ -93,13 +119,24 @@ struct LibraryView: View {
                     Button("Done") { dismiss() }
                         .foregroundStyle(Color.appPrimary)
                 }
-                if selectedTab == .collections {
+                if selectedTab == .collections && targetWord == nil {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
                             newCollectionName = ""
                             showNewAlert = true
                         } label: {
-                            Image(systemName: "plus")
+                            Image(systemName: "plus").foregroundStyle(Color.appPrimary)
+                        }
+                    }
+                }
+                if selectedTab == .saved && !library.savedWords.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        ShareLink(
+                            item: library.savedExportText,
+                            subject: Text("Saved Vocab Words"),
+                            message: Text("Words I want to learn from VocabWidget")
+                        ) {
+                            Image(systemName: "square.and.arrow.up")
                                 .foregroundStyle(Color.appPrimary)
                         }
                     }
@@ -111,10 +148,6 @@ struct LibraryView: View {
                     let name = newCollectionName.trimmingCharacters(in: .whitespaces)
                     guard !name.isEmpty else { return }
                     library.createCollection(name)
-                    // Auto-add the card word when opened from the Collections button
-                    if let word = targetWord {
-                        library.toggleWord(word, inCollection: name)
-                    }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -124,7 +157,68 @@ struct LibraryView: View {
         .sheet(item: $detailWord) { WordInfoView(word: $0) }
     }
 
-    // ── Word list (Liked / Mastered) ──────────────────────────────────────────
+    // ── Like picker (opened from the Like button on a card) ───────────────────
+    // Shows a hardcoded "Liked ♥" row at the top, then user-created collections.
+
+    @ViewBuilder
+    private func likePickerContent() -> some View {
+        if let word = targetWord {
+        List {
+            Section {
+                // Hardcoded Liked row — pinned at top, highlighted in red
+                let isLiked = library.isLiked(word)
+                Button { library.toggleLike(word) } label: {
+                    HStack(spacing: 16) {
+                        ZStack {
+                            Circle()
+                                .fill(isLiked
+                                      ? Color(red: 0.95, green: 0.35, blue: 0.35).opacity(0.15)
+                                      : Color.appPrimary.opacity(0.05))
+                                .frame(width: 36, height: 36)
+                            Image(systemName: isLiked ? "heart.fill" : "heart")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(isLiked
+                                                 ? Color(red: 0.95, green: 0.35, blue: 0.35)
+                                                 : Color.appSecondary)
+                        }
+                        Text("Liked")
+                            .font(.custom("Inter_18pt-Regular", size: 17))
+                            .foregroundStyle(Color.appPrimary)
+                        Spacer()
+                        if isLiked {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color(red: 0.95, green: 0.35, blue: 0.35))
+                        }
+                    }
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(
+                    isLiked
+                        ? Color(red: 0.95, green: 0.35, blue: 0.35).opacity(0.06)
+                        : Color.appBackground
+                )
+            }
+            .listRowSeparatorTint(Color.appSecondary.opacity(0.2))
+
+            if !library.collectionNames.isEmpty {
+                Section("Collections") {
+                    ForEach(library.collectionNames, id: \.self) { name in
+                        collectionToggleRow(name: name, word: word)
+                            .listRowBackground(Color.appBackground)
+                            .listRowSeparatorTint(Color.appSecondary.opacity(0.2))
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        } // end if let word
+    }
+
+    // ── Word list (Saved / Liked / Mastered) ──────────────────────────────────
 
     @ViewBuilder
     private func wordList(
@@ -154,42 +248,30 @@ struct LibraryView: View {
             emptyState(
                 icon:    "square.stack",
                 message: "No collections yet.",
-                hint:    targetWord != nil
-                    ? "Tap + to create your first collection."
-                    : "Tap + to create one, then add words\nusing the Collections button on any card."
+                hint:    "Tap + to create one."
             )
         } else {
             List {
                 ForEach(library.collectionNames, id: \.self) { name in
-                    if let word = targetWord {
-                        // ── Toggle mode: tap to add/remove current card word ──
-                        collectionToggleRow(name: name, word: word)
-                            .listRowBackground(Color.appBackground)
-                            .listRowSeparatorTint(Color.appSecondary.opacity(0.2))
-                    } else {
-                        // ── Browse mode: navigate into collection ─────────────
-                        NavigationLink {
-                            CollectionDetailView(name: name, library: library)
-                        } label: {
-                            HStack {
-                                Text(name)
-                                    .font(.custom("Inter_18pt-Regular", size: 17))
-                                    .foregroundStyle(Color.appPrimary)
-                                Spacer()
-                                Text("\(library.words(inCollection: name).count)")
-                                    .font(.custom("Inter_18pt-Regular", size: 13))
-                                    .foregroundStyle(Color.appSecondary)
-                            }
-                            .padding(.vertical, 4)
+                    NavigationLink {
+                        CollectionDetailView(name: name, library: library)
+                    } label: {
+                        HStack {
+                            Text(name)
+                                .font(.custom("Inter_18pt-Regular", size: 17))
+                                .foregroundStyle(Color.appPrimary)
+                            Spacer()
+                            Text("\(library.words(inCollection: name).count)")
+                                .font(.custom("Inter_18pt-Regular", size: 13))
+                                .foregroundStyle(Color.appSecondary)
                         }
-                        .listRowBackground(Color.appBackground)
-                        .listRowSeparatorTint(Color.appSecondary.opacity(0.2))
+                        .padding(.vertical, 4)
                     }
+                    .listRowBackground(Color.appBackground)
+                    .listRowSeparatorTint(Color.appSecondary.opacity(0.2))
                 }
                 .onDelete { offsets in
-                    offsets.forEach { i in
-                        library.deleteCollection(library.collectionNames[i])
-                    }
+                    offsets.forEach { i in library.deleteCollection(library.collectionNames[i]) }
                 }
             }
             .listStyle(.plain)
@@ -200,11 +282,8 @@ struct LibraryView: View {
     @ViewBuilder
     private func collectionToggleRow(name: String, word: VocabularyWord) -> some View {
         let inCollection = library.wordIsIn(word, collection: name)
-        Button {
-            library.toggleWord(word, inCollection: name)
-        } label: {
+        Button { library.toggleWord(word, inCollection: name) } label: {
             HStack(spacing: 16) {
-                // Status icon
                 ZStack {
                     Circle()
                         .fill(inCollection
@@ -217,8 +296,6 @@ struct LibraryView: View {
                                          ? Color(red: 0.35, green: 0.85, blue: 0.55)
                                          : Color.appSecondary)
                 }
-
-                // Name + word count
                 VStack(alignment: .leading, spacing: 3) {
                     Text(name)
                         .font(.custom("Inter_18pt-Regular", size: 17))
@@ -227,8 +304,12 @@ struct LibraryView: View {
                         .font(.custom("Inter_18pt-Regular", size: 12))
                         .foregroundStyle(Color.appSecondary.opacity(0.6))
                 }
-
                 Spacer()
+                if inCollection {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.35, green: 0.85, blue: 0.55))
+                }
             }
             .padding(.vertical, 8)
             .contentShape(Rectangle())
@@ -241,7 +322,6 @@ struct LibraryView: View {
     @ViewBuilder
     private func wordRow(_ word: VocabularyWord) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-
             Button { detailWord = word } label: {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(alignment: .firstTextBaseline) {
@@ -292,20 +372,6 @@ struct LibraryView: View {
         .padding(.vertical, 6)
     }
 
-    /// Three dots whose fill conveys Zipf frequency: more filled = more common/easier.
-    /// Zipf ≥ 4.0 → 3 dots, 3.0–4.0 → 2 dots, < 3.0 → 1 dot.
-    @ViewBuilder
-    private func frequencyBadge(_ zipf: Double) -> some View {
-        let filled = zipf >= 4.0 ? 3 : zipf >= 3.0 ? 2 : 1
-        HStack(spacing: 3) {
-            ForEach(1...3, id: \.self) { i in
-                Circle()
-                    .fill(i <= filled ? Color.appSecondary : Color.appSecondary.opacity(0.2))
-                    .frame(width: 5, height: 5)
-            }
-        }
-    }
-
     @ViewBuilder
     private func emptyState(icon: String, message: String, hint: String) -> some View {
         Spacer()
@@ -346,7 +412,7 @@ struct CollectionDetailView: View {
                     Text("No words yet.")
                         .font(.custom("PlayfairDisplay-Bold", size: 18))
                         .foregroundStyle(Color.appPrimary)
-                    Text("Add words using the Collections\nbutton on any card.")
+                    Text("Add words using the ♡ Like button\non any card.")
                         .font(.custom("Inter_18pt-Regular", size: 15))
                         .foregroundStyle(Color.appSecondary)
                         .multilineTextAlignment(.center)
@@ -356,7 +422,6 @@ struct CollectionDetailView: View {
             } else {
                 List(words) { word in
                     VStack(alignment: .leading, spacing: 8) {
-
                         Button { detailWord = word } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 HStack(alignment: .firstTextBaseline) {
@@ -427,6 +492,4 @@ struct CollectionDetailView: View {
     }
 }
 
-#Preview {
-    LibraryView(library: UserLibrary())
-}
+#Preview { LibraryView(library: UserLibrary()) }

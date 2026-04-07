@@ -1,0 +1,57 @@
+afford                          # too common (Zipf 4.57)
+aphorsim                        # no definition found
+arrest                          # too common (Zipf 4.55)
+august                          # too common (Zipf 5.10)
+base                            # too common (Zipf 5.05)
+becoming                        # too common (Zipf 4.81)
+calumniator                     # no definition found
+champion                        # too common (Zipf 4.62)
+check                           # too common (Zipf 5.31)
+color                           # too common (Zipf 4.91)
+dog                             # too common (Zipf 5.10)
+e.g.                            # too common (Zipf 4.53)
+exact                           # too common (Zipf 4.51)
+explicator                      # no definition found
+exscind                         # no definition found
+fancy                           # too common (Zipf 4.35)
+felicitious                     # no definition found
+fell                            # too common (Zipf 4.85)
+flag                            # too common (Zipf 4.58)
+gawkishness                     # no definition found
+guy                             # too common (Zipf 5.40)
+hagiographic                    # no definition found
+humbuggery                      # no definition found
+husband                         # too common (Zipf 5.00)
+hyberbole                       # no definition found
+inasmuch                        # no definition found
+involved                        # too common (Zipf 5.10)
+list                            # too common (Zipf 5.28)
+meterological                   # no definition found
+milk                            # too common (Zipf 4.66)
+minute                          # too common (Zipf 4.98)
+moment                          # too common (Zipf 5.24)
+net                             # too common (Zipf 4.76)
+nice                            # too common (Zipf 5.37)
+noble                           # too common (Zipf 4.24)
+novel                           # too common (Zipf 4.63)
+plastic                         # too common (Zipf 4.51)
+plebian                         # no definition found
+portentious                     # no definition found
+prime                           # too common (Zipf 4.81)
+prize                           # too common (Zipf 4.59)
+ranks                           # too common (Zipf 4.23)
+rent                            # too common (Zipf 4.58)
+repertorial                     # no definition found
+reviler                         # no definition found
+row                             # too common (Zipf 4.60)
+solipsistic                     # no definition found
+sonder                          # no definition found
+sound                           # too common (Zipf 5.15)
+standing                        # too common (Zipf 4.86)
+start                           # too common (Zipf 5.56)
+table                           # too common (Zipf 5.05)
+telling                         # too common (Zipf 4.92)
+uniform                         # too common (Zipf 4.33)
+viturperate                     # no definition found
+wanting                         # too common (Zipf 4.49)
+weather                         # too common (Zipf 4.87)
