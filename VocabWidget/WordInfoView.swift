@@ -32,6 +32,15 @@ struct WordInfoView: View {
                             .font(.body)
                     }
 
+                    // ── Key Idea ──────────────────────────────────────────
+                    if let keyIdea = word.keyIdea {
+                        infoSection(title: "Key Idea", icon: "lightbulb") {
+                            Text(keyIdea)
+                                .font(.body).italic()
+                                .foregroundStyle(.primary)
+                        }
+                    }
+
                     // ── Examples ──────────────────────────────────────────
                     if !word.examples.isEmpty {
                         infoSection(
@@ -45,6 +54,24 @@ struct WordInfoView: View {
                                         .foregroundStyle(.secondary)
                                 }
                             }
+                        }
+                    }
+
+                    // ── Nuance ────────────────────────────────────────────
+                    if let nuance = word.nuance {
+                        infoSection(title: "Usage Note", icon: "pencil.and.outline") {
+                            Text(nuance)
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    // ── Typical Usage ─────────────────────────────────────
+                    if let typicalUsage = word.typicalUsage {
+                        infoSection(title: "Typical Usage", icon: "text.alignleft") {
+                            Text(typicalUsage)
+                                .font(.body)
+                                .foregroundStyle(.secondary)
                         }
                     }
 

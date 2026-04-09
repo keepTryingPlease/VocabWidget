@@ -1,55 +1,33 @@
 // DeckScheduler.swift
 //
-// The deck is a flat array of DeckCards — each card is a (word, UUID) pair.
-// The UUID gives SwiftUI a stable, unique identity even when the same word
-// appears in multiple passes of the deck, which is how looping works.
-//
-// Loop / infinite scroll
-// ──────────────────────
-// When the user gets within 8 cards of the end, appendPassIfNeeded() adds a
-// fresh shuffled pass of all eligible words. The deck grows seamlessly.
-//
-// Eligibility filter
-// ──────────────────
-// A word is eligible if it is not mastered, not disregarded, and has a
-// Zipf frequency ≤ 4.2 (too-common words are excluded).
-// Words are presented in random order — no zone sorting.
+// Builds a flat array of DeckCards from the curated word list.
+// Only words with quiz content are shown (testing mode).
+// Remove the quiz filter in makePass to restore the full deck.
 
 import Foundation
 import Combine
 
-// ── DeckCard ──────────────────────────────────────────────────────────────────
-
 struct DeckCard: Identifiable {
-    let id:     UUID    // unique per slot — stable once created
-    let wordID: Int     // references VocabularyWord.id
+    let id:     UUID
+    let wordID: Int
 }
-
-// ── DeckScheduler ─────────────────────────────────────────────────────────────
 
 class DeckScheduler: ObservableObject {
 
     @Published private(set) var deck: [DeckCard] = []
 
-    // ── Public API ────────────────────────────────────────────────────────────
-
-    func buildInitialDeck(masteredIDs: Set<Int>, disregardedIDs: Set<Int>) {
-        deck = makePass(masteredIDs: masteredIDs, disregardedIDs: disregardedIDs)
+    func buildInitialDeck() {
+        deck = makePass()
     }
 
-    func appendPassIfNeeded(currentIndex: Int, masteredIDs: Set<Int>, disregardedIDs: Set<Int>) {
+    func appendPassIfNeeded(currentIndex: Int) {
         guard deck.count - currentIndex <= 8 else { return }
-        deck.append(contentsOf: makePass(masteredIDs: masteredIDs, disregardedIDs: disregardedIDs))
+        deck.append(contentsOf: makePass())
     }
 
-    // ── Pass builder ──────────────────────────────────────────────────────────
-
-    private let maxZipf: Double = 4.2
-
-    private func makePass(masteredIDs: Set<Int>, disregardedIDs: Set<Int>) -> [DeckCard] {
-        let excluded = masteredIDs.union(disregardedIDs)
-        return VocabularyStore.words
-            .filter { !excluded.contains($0.id) && $0.frequency <= maxZipf }
+    private func makePass() -> [DeckCard] {
+        VocabularyStore.words
+            .filter { $0.quiz != nil && !($0.quiz?.isEmpty ?? true) }  // TESTING: quiz words only
             .map(\.id)
             .shuffled()
             .map { DeckCard(id: UUID(), wordID: $0) }

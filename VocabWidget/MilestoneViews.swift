@@ -236,9 +236,9 @@ struct MilestoneProgressView: View {
                         .padding(.bottom, 8)
                 }
 
-                Text(library.masteredIDs.isEmpty
-                     ? "Start mastering words to unlock achievements"
-                     : "\(library.masteredIDs.count) word\(library.masteredIDs.count == 1 ? "" : "s") mastered")
+                Text(library.favoriteIDs.isEmpty
+                     ? "Favorite words to track your progress"
+                     : "\(library.favoriteIDs.count) word\(library.favoriteIDs.count == 1 ? "" : "s") favorited")
                     .font(.custom("Inter_18pt-Regular", size: 14))
                     .foregroundStyle(Color.appSecondary)
                     .padding(.bottom, 20)

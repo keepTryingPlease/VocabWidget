@@ -5,6 +5,18 @@
 
 import Foundation
 
+// ── Quiz ─────────────────────────────────────────────────────────────────────
+
+struct QuizQuestion: Identifiable, Codable {
+    let id: Int            // 0-based index within the word's quiz array
+    let title: String      // e.g. "Meaning Match", "Fill in the Blank"
+    let prompt: String     // The question text or word displayed above options
+    let options: [String]  // Always 3 options
+    let answerIndex: Int   // 0-based index of the correct answer
+}
+
+// ── Word ─────────────────────────────────────────────────────────────────────
+
 struct VocabularyWord: Identifiable, Codable {
     let id: Int
     let word: String
@@ -17,4 +29,8 @@ struct VocabularyWord: Identifiable, Codable {
                                // Typical vocab range: 2.0–5.0.
     let isFeatured: Bool       // true = eligible for lock screen word of the day
     let mastered: Bool         // true = hidden from the active deck
+    let keyIdea: String?       // one-line conceptual hook, e.g. "A hidden flaw that undermines everything"
+    let nuance: String?        // usage note distinguishing this word from near-synonyms
+    let typicalUsage: String?  // contexts and collocations where the word naturally appears
+    let quiz: [QuizQuestion]?  // nil for most words; populated for hand-curated words
 }

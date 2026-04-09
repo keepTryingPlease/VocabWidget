@@ -29,3 +29,6 @@ Pods/
 
 # Word list generation — output files (scripts themselves are committed)
 words_generated.json
+
+# Research notes — local only, not for repo
+research/

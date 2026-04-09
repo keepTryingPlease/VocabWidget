@@ -70,7 +70,24 @@ Previous versions had level-based decks. Removed in favour of a single adaptive 
 
 ## In-progress / open questions
 <!-- Update this section at the end of each session -->
-_Last updated: 2026-04-06_
+_Last updated: 2026-04-09_
+
+### Testing mode — ACTIVE
+- Deck shows only the 34 curated words from `vocab_quiz_revised_v7.xlsx` (quiz-only filter in `DeckScheduler.makePass`)
+- To restore full deck: remove the `quiz != nil` filter in `DeckScheduler.swift`
+- New words added: voluptuary, boon, quiescence, somnolence, paragon, erudition, eclecticism, provident, scrupulousness, abnegation, splenetic, vacuous, pertinacious, perambulate, jouska, occhiolism (+ prior 18)
+- moiety and idiographic are in words.json but have no quiz, so they're hidden
+
+### Current UI — vertical scroll paging
+- Replaced Tinder swipe with vertical ScrollView + `.scrollTargetBehavior(.paging)`
+- Card shows: word (left) + speaker icon (right, inline) | rarity badge | definition only (no example)
+- Action bar: Info | Favorite | Classroom | Library
+- Library sheet: two tabs — Favorites (❤️) and Classroom (🎓)
+- Swipe-to-remove in Library lists
+- Quiz pill still appears on cards that have quiz content
+
+### `#if DEBUG` wipe block
+Still active in `UserLibrary.init()` — wipes all state on every launch. Remove before shipping.
 
 ### Ratchet difficulty system — SHIPPED
 
