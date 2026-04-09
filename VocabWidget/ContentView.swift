@@ -48,15 +48,18 @@ private enum RarityLevel {
 
 struct ContentView: View {
 
-    @StateObject private var library   = UserLibrary()
-    @StateObject private var scheduler = DeckScheduler()
+    @StateObject private var library          = UserLibrary()
+    @StateObject private var scheduler        = DeckScheduler()
+    @StateObject private var milestoneManager = MilestoneManager()
 
-    @State private var currentCardID:      UUID?           = nil
-    @State private var infoWord:           VocabularyWord? = nil
-    @State private var quizWord:           VocabularyWord? = nil
-    @State private var selectedWord:       VocabularyWord? = nil
-    @State private var showingLibrary      = false
-    @State private var fetchingAudioForID: Int?            = nil
+    @State private var currentCardID:       UUID?           = nil
+    @State private var infoWord:            VocabularyWord? = nil
+    @State private var quizWord:            VocabularyWord? = nil
+    @State private var selectedWord:        VocabularyWord? = nil
+    @State private var showingLibrary       = false
+    @State private var fetchingAudioForID:  Int?            = nil
+    @State private var celebrationMilestone: Milestone?     = nil
+    @State private var showingMilestones    = false
 
     private let idToWord: [Int: VocabularyWord] =
         Dictionary(uniqueKeysWithValues: VocabularyStore.words.map { ($0.id, $0) })
@@ -83,10 +86,18 @@ struct ContentView: View {
             else { return }
             scheduler.appendPassIfNeeded(currentIndex: idx)
         }
-        .sheet(item: $infoWord)        { WordInfoView(word: $0) }
-        .sheet(item: $quizWord)        { QuizView(word: $0) }
-        .sheet(item: $selectedWord)    { WordDetailView(word: $0) }
-        .sheet(isPresented: $showingLibrary) { LibraryView(library: library) }
+        .onChange(of: library.learnedIDs.count) { _, count in
+            if let milestone = milestoneManager.milestone(forNewCount: count) {
+                celebrationMilestone = milestone
+            }
+        }
+        .sheet(item: $infoWord)               { WordInfoView(word: $0) }
+        .sheet(item: $quizWord)               { QuizView(word: $0, library: library) }
+        .sheet(item: $selectedWord)           { WordDetailView(word: $0) }
+        .sheet(item: $celebrationMilestone)   { MilestoneCelebrationView(milestone: $0) }
+        .sheet(isPresented: $showingLibrary)  { LibraryView(library: library) }
+        .sheet(isPresented: $showingMilestones) { MilestoneProgressView(milestoneManager: milestoneManager, library: library) }
+        .overlay(alignment: .topLeading) { milestonesButton() }
         .onOpenURL { url in
             guard url.scheme == "vocabwidget", url.host == "word",
                   let id = Int(url.lastPathComponent),
@@ -176,23 +187,9 @@ struct ContentView: View {
                         .padding(.horizontal, 32)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    // Quiz pill
+                    // Quiz pill — state-aware
                     if let quiz = word.quiz, !quiz.isEmpty {
-                        Button { quizWord = word } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "brain")
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text("Take Quiz · \(quiz.count) questions")
-                                    .font(.system(size: 12, weight: .semibold))
-                            }
-                            .foregroundStyle(Color.appAccent)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background(Color.appAccent.opacity(0.12))
-                            .clipShape(Capsule())
-                            .overlay(Capsule().strokeBorder(Color.appAccent.opacity(0.35), lineWidth: 0.5))
-                        }
-                        .padding(.top, 4)
+                        quizPill(for: word, questionCount: quiz.count)
                     }
                 }
 
@@ -241,6 +238,59 @@ struct ContentView: View {
         .background(Color.appBackground)
     }
 
+    // ── Quiz pill ─────────────────────────────────────────────────────────────
+
+    @ViewBuilder
+    private func quizPill(for word: VocabularyWord, questionCount: Int) -> some View {
+        if library.isLearned(word) {
+            // Learned — show green badge, still tappable for practice
+            Button { quizWord = word } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Learned · Retake Quiz")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(Color(red: 0.25, green: 0.80, blue: 0.50))
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .background(Color(red: 0.25, green: 0.80, blue: 0.50).opacity(0.12))
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(Color(red: 0.25, green: 0.80, blue: 0.50).opacity(0.35), lineWidth: 0.5))
+            }
+            .padding(.top, 4)
+        } else if let expiry = library.quizCooldownExpiry(for: word) {
+            // Locked — show cooldown timer
+            HStack(spacing: 6) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Try again \(expiry, style: .relative) from now")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(Color.appSecondary)
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .background(Color.appSecondary.opacity(0.08))
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(Color.appSecondary.opacity(0.25), lineWidth: 0.5))
+            .padding(.top, 4)
+        } else {
+            // Available
+            Button { quizWord = word } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "brain")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Take Quiz · \(questionCount) questions")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(Color.appAccent)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .background(Color.appAccent.opacity(0.12))
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(Color.appAccent.opacity(0.35), lineWidth: 0.5))
+            }
+            .padding(.top, 4)
+        }
+    }
+
     // ── Rarity badge ──────────────────────────────────────────────────────────
 
     @ViewBuilder
@@ -271,6 +321,29 @@ struct ContentView: View {
                 .font(.custom("Inter_18pt-Regular", size: 16))
                 .foregroundStyle(Color.appSecondary)
         }
+    }
+
+    // ── Milestones button ─────────────────────────────────────────────────────
+
+    @ViewBuilder
+    private func milestonesButton() -> some View {
+        Button { showingMilestones = true } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "trophy.fill")
+                    .font(.system(size: 10, weight: .medium))
+                Text("\(milestoneManager.shownCounts.count)/\(Milestone.all.count)")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.12))
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(
+                Color(red: 0.95, green: 0.78, blue: 0.35).opacity(0.25), lineWidth: 0.5))
+        }
+        .padding(.top, 56)
+        .padding(.leading, 24)
     }
 
     // ── Action button ─────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 // MilestoneManager.swift
 // Defines every mastery milestone and tracks which ones have already
-// been shown. Milestones fire based on total words mastered globally
+// been shown. Milestones fire based on total words learned globally
 // (across all levels). Each milestone only ever fires once.
 
 import Foundation
@@ -109,7 +109,7 @@ class MilestoneManager: ObservableObject {
         shownCounts = Set(saved)
     }
 
-    /// Returns a Milestone if the new global mastered count just crossed one
+    /// Returns a Milestone if the new global learned count just crossed one
     /// that hasn't been shown before. Returns nil otherwise.
     func milestone(forNewCount count: Int) -> Milestone? {
         guard let hit = Milestone.all.first(where: { $0.count == count }),
